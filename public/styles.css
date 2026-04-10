@@ -494,6 +494,14 @@ h1 {
   margin-bottom: 8px;
 }
 
+.mapping-chain-hint {
+  margin: 10px 0 0;
+  max-width: 62ch;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

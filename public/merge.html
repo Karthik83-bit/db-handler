@@ -147,6 +147,11 @@
           <div>
             <p class="eyebrow">Step 3</p>
             <h2 class="section-title">Create field mappings</h2>
+            <p class="mapping-chain-hint">
+              Order mappings as a foreign-key chain from the lookup table: first hop
+              connects the lookup table to the next, then the next to the next (e.g. A→B,
+              then B→C). You need one mapping per hop.
+            </p>
           </div>
           <button id="addMappingBtn" class="button secondary">Add Mapping</button>
         </div>
