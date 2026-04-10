@@ -148,9 +148,9 @@
             <p class="eyebrow">Step 3</p>
             <h2 class="section-title">Create field mappings</h2>
             <p class="mapping-chain-hint">
-              Order mappings as a foreign-key chain from the lookup table: first hop
-              connects the lookup table to the next, then the next to the next (e.g. A→B,
-              then B→C). You need one mapping per hop.
+              Mappings can branch (e.g. lookup table A to B, A to C, and B to D). Every
+              selected table must be connected through these links. The server fetches
+              unfetched sides in passes until all reachable tables are loaded, then joins.
             </p>
           </div>
           <button id="addMappingBtn" class="button secondary">Add Mapping</button>

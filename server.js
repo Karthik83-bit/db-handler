@@ -726,99 +726,259 @@ function resolveSourceKey(selectedSources, database, entity, sourceId) {
   return getSourceKey(candidate.database, candidate.entity, candidate.sourceId);
 }
 
-/**
- * Lookup (table + field + value) is step 0. Each mapping row must extend the FK
- * chain in order from that lookup table: lookup → next table → next table …
- * (e.g. A.id → B.id, then B.key → C.key). Returns directed edges for fetch + join.
- */
-function buildLookupJoinChain(lookupSourceKey, orderedMappings, selectedSources) {
-  const edges = [];
-  let currentKey = lookupSourceKey;
-  const visited = new Set([currentKey]);
+function validateMergeGraph(selectedSources, mappings) {
+  const sourceKeys = selectedSources.map((source) =>
+    getSourceKey(source.database, source.entity, source.sourceId)
+  );
 
-  orderedMappings.forEach((m, i) => {
-    const leftKey = resolveSourceKey(
+  const knownSources = new Set(sourceKeys);
+  const adjacency = new Map(sourceKeys.map((sourceKey) => [sourceKey, new Set()]));
+
+  mappings.forEach((mapping) => {
+    const leftSourceKey = resolveSourceKey(
       selectedSources,
-      m.leftDatabase,
-      m.leftEntity,
-      m.leftSourceId
+      mapping.leftDatabase,
+      mapping.leftEntity,
+      mapping.leftSourceId
     );
-    const rightKey = resolveSourceKey(
+    const rightSourceKey = resolveSourceKey(
       selectedSources,
-      m.rightDatabase,
-      m.rightEntity,
-      m.rightSourceId
+      mapping.rightDatabase,
+      mapping.rightEntity,
+      mapping.rightSourceId
     );
 
-    if (leftKey === currentKey && rightKey !== currentKey && !visited.has(rightKey)) {
-      edges.push({
-        from: currentKey,
-        to: rightKey,
-        fromField: m.leftField,
-        toField: m.rightField,
-        castType: m.castType
-      });
-      currentKey = rightKey;
-      visited.add(rightKey);
-    } else if (rightKey === currentKey && leftKey !== currentKey && !visited.has(leftKey)) {
-      edges.push({
-        from: currentKey,
-        to: leftKey,
-        fromField: m.rightField,
-        toField: m.leftField,
-        castType: m.castType
-      });
-      currentKey = leftKey;
-      visited.add(leftKey);
-    } else {
-      throw new Error(
-        `Mapping ${i + 1} must extend the join chain from the current table. ` +
-          `Current: "${currentKey}". This mapping has left="${leftKey}" right="${rightKey}". ` +
-          `Order mappings as: lookup table → next table → next table (FK chain).`
-      );
+    if (!knownSources.has(leftSourceKey) || !knownSources.has(rightSourceKey)) {
+      throw new Error("Each mapping must point to a selected table or collection.");
     }
+
+    assertValidFieldPath(mapping.leftField, "mapping field");
+    assertValidFieldPath(mapping.rightField, "mapping field");
+
+    adjacency.get(leftSourceKey).add(rightSourceKey);
+    adjacency.get(rightSourceKey).add(leftSourceKey);
   });
 
-  if (visited.size !== selectedSources.length) {
-    throw new Error(
-      "Each selected table must appear exactly once in the join chain. " +
-        `Connected ${visited.size} of ${selectedSources.length} sources. ` +
-        `Use ${selectedSources.length - 1} mapping row(s) in order (one FK hop each).`
-    );
+  const visited = new Set();
+  const queue = [sourceKeys[0]];
+
+  while (queue.length) {
+    const current = queue.shift();
+    if (visited.has(current)) {
+      continue;
+    }
+
+    visited.add(current);
+    adjacency.get(current).forEach((next) => {
+      if (!visited.has(next)) {
+        queue.push(next);
+      }
+    });
   }
 
-  return edges;
+  if (visited.size !== sourceKeys.length) {
+    throw new Error(
+      "Add mapping rules so every selected table or collection is connected."
+    );
+  }
 }
 
 /**
- * Inner join along the chain: each edge adds matching rows from the next table.
+ * When a lookup filter is used, keep the base (lookup) rows fixed and repeatedly
+ * narrow every other source using mapping edges. Only the mapped column pair
+ * participates (valuesMatch + castType).
  */
-function mergeChainJoinEdges(chainEdges, rowsBySource, selectedSources) {
-  const baseKey = chainEdges[0].from;
-  let currentGroups = (rowsBySource[baseKey]?.rows || []).map((row) => ({
-    [baseKey]: row
-  }));
+function narrowRowsByLookupJoins(
+  selectedSources,
+  rowsBySource,
+  mappings,
+  baseSourceKey
+) {
+  const sourceKeys = selectedSources.map((source) =>
+    getSourceKey(source.database, source.entity, source.sourceId)
+  );
+  const bucket = {};
+  sourceKeys.forEach((sk) => {
+    bucket[sk] = [...(rowsBySource[sk]?.rows || [])];
+  });
 
-  for (const edge of chainEdges) {
-    const nextGroups = [];
-    currentGroups.forEach((group) => {
-      const fromRow = group[edge.from];
-      const toRows = rowsBySource[edge.to]?.rows || [];
-      const matches = toRows.filter((rRow) =>
-        valuesMatch(
-          getNestedValue(fromRow, edge.fromField),
-          getNestedValue(rRow, edge.toField),
-          edge.castType
-        )
+  const baseRows = [...(rowsBySource[baseSourceKey]?.rows || [])];
+  bucket[baseSourceKey] = baseRows;
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+
+    mappings.forEach((mapping) => {
+      const leftSourceKey = resolveSourceKey(
+        selectedSources,
+        mapping.leftDatabase,
+        mapping.leftEntity,
+        mapping.leftSourceId
       );
-      matches.forEach((m) => {
-        nextGroups.push({ ...group, [edge.to]: m });
-      });
+      const rightSourceKey = resolveSourceKey(
+        selectedSources,
+        mapping.rightDatabase,
+        mapping.rightEntity,
+        mapping.rightSourceId
+      );
+
+      if (rightSourceKey !== baseSourceKey) {
+        const newRight = bucket[rightSourceKey].filter((rRow) =>
+          bucket[leftSourceKey].some((lRow) =>
+            valuesMatch(
+              getNestedValue(lRow, mapping.leftField),
+              getNestedValue(rRow, mapping.rightField),
+              mapping.castType
+            )
+          )
+        );
+        if (newRight.length !== bucket[rightSourceKey].length) {
+          bucket[rightSourceKey] = newRight;
+          changed = true;
+        }
+      }
+
+      if (leftSourceKey !== baseSourceKey) {
+        const newLeft = bucket[leftSourceKey].filter((lRow) =>
+          bucket[rightSourceKey].some((rRow) =>
+            valuesMatch(
+              getNestedValue(lRow, mapping.leftField),
+              getNestedValue(rRow, mapping.rightField),
+              mapping.castType
+            )
+          )
+        );
+        if (newLeft.length !== bucket[leftSourceKey].length) {
+          bucket[leftSourceKey] = newLeft;
+          changed = true;
+        }
+      }
     });
-    currentGroups = nextGroups;
   }
 
-  return currentGroups.map((group) => flattenMergedGroup(group, selectedSources));
+  const next = {};
+  sourceKeys.forEach((sk) => {
+    next[sk] = {
+      ...rowsBySource[sk],
+      rows: bucket[sk]
+    };
+  });
+  return next;
+}
+
+function mergeAcrossSources(selectedSources, rowsBySource, mappings, options = {}) {
+  const keepUnmatched = options.keepUnmatched !== false;
+  const sourceKeys = selectedSources.map((source) =>
+    getSourceKey(source.database, source.entity, source.sourceId)
+  );
+  const [baseSourceKey] = sourceKeys;
+  let mergedGroups = (rowsBySource[baseSourceKey] || []).map((row) => ({
+    [baseSourceKey]: row
+  }));
+  const resolvedSources = new Set([baseSourceKey]);
+  const pendingSources = new Set(sourceKeys.slice(1));
+
+  while (pendingSources.size > 0) {
+    let progressed = false;
+
+    for (const pendingSourceKey of Array.from(pendingSources)) {
+      const relatedMappings = mappings.filter((mapping) => {
+        const leftSourceKey = resolveSourceKey(
+          selectedSources,
+          mapping.leftDatabase,
+          mapping.leftEntity,
+          mapping.leftSourceId
+        );
+        const rightSourceKey = resolveSourceKey(
+          selectedSources,
+          mapping.rightDatabase,
+          mapping.rightEntity,
+          mapping.rightSourceId
+        );
+
+        return (
+          (leftSourceKey === pendingSourceKey && resolvedSources.has(rightSourceKey)) ||
+          (rightSourceKey === pendingSourceKey && resolvedSources.has(leftSourceKey))
+        );
+      });
+
+      if (!relatedMappings.length) {
+        continue;
+      }
+
+      const sourceRows = rowsBySource[pendingSourceKey] || [];
+      const nextGroups = [];
+
+      mergedGroups.forEach((group) => {
+        const matches = sourceRows.filter((sourceRow) =>
+          relatedMappings.every((mapping) => {
+            const leftSourceKey = resolveSourceKey(
+              selectedSources,
+              mapping.leftDatabase,
+              mapping.leftEntity,
+              mapping.leftSourceId
+            );
+            const rightSourceKey = resolveSourceKey(
+              selectedSources,
+              mapping.rightDatabase,
+              mapping.rightEntity,
+              mapping.rightSourceId
+            );
+            const leftRow =
+              leftSourceKey === pendingSourceKey
+                ? sourceRow
+                : group[leftSourceKey];
+            const rightRow =
+              rightSourceKey === pendingSourceKey
+                ? sourceRow
+                : group[rightSourceKey];
+
+            if (!leftRow || !rightRow) {
+              return false;
+            }
+
+            return valuesMatch(
+              getNestedValue(leftRow, mapping.leftField),
+              getNestedValue(rightRow, mapping.rightField),
+              mapping.castType
+            );
+          })
+        );
+
+        if (matches.length === 0) {
+          if (!keepUnmatched) {
+            return;
+          }
+          nextGroups.push({
+            ...group,
+            [pendingSourceKey]: null
+          });
+          return;
+        }
+
+        matches.forEach((match) => {
+          nextGroups.push({
+            ...group,
+            [pendingSourceKey]: match
+          });
+        });
+      });
+
+      mergedGroups = nextGroups;
+      resolvedSources.add(pendingSourceKey);
+      pendingSources.delete(pendingSourceKey);
+      progressed = true;
+    }
+
+    if (!progressed) {
+      throw new Error(
+        "Could not build the merge order from the selected mapping rules."
+      );
+    }
+  }
+
+  return mergedGroups.map((group) => flattenMergedGroup(group, selectedSources));
 }
 
 function flattenMergedGroup(group, selectedSources) {
@@ -1021,12 +1181,7 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
     orderedSelectedSources[0].sourceId
   );
 
-  const chainEdges = buildLookupJoinChain(
-    baseSourceKey,
-    normalizedMappings,
-    orderedSelectedSources
-  );
-  pushTrace("Resolved FK join chain (lookup → each hop).", chainEdges);
+  validateMergeGraph(orderedSelectedSources, normalizedMappings);
 
   assertValidFieldPath(lookupFilter.field, "filter field");
   pushTrace("Querying lookup source with lookup filter.", {
@@ -1077,45 +1232,133 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
     };
   }
 
-  for (const edge of chainEdges) {
-    const fromRows = rowsBySource[edge.from]?.rows || [];
-    const targetSource = orderedSelectedSources.find(
-      (source) =>
-        getSourceKey(source.database, source.entity, source.sourceId) === edge.to
+  function mergeRowsIntoSourceSlot(sourceKey, result) {
+    const prev = rowsBySource[sourceKey]?.rows || [];
+    const combined = [...prev, ...result.rows];
+    const deduped = Array.from(
+      new Map(combined.map((row) => [JSON.stringify(row), row])).values()
     );
-    const sourceValues = fromRows.map((row) => getNestedValue(row, edge.fromField));
-    pushTrace("Chain fetch (FK hop).", {
-      from: `${edge.from}.${edge.fromField}`,
-      to: `${edge.to}.${edge.toField}`,
-      castType: edge.castType,
-      inputRowCount: sourceValues.length,
-      fromLookupSource: edge.from === baseSourceKey
-    });
-    const result = await querySourceByMappedValues(
-      targetSource,
-      edge.toField,
-      sourceValues
-    );
-    rowsBySource[edge.to] = {
-      ...rowsBySource[edge.to],
-      columns: result.columns,
-      rows: result.rows
+    const colSet = new Set(rowsBySource[sourceKey]?.columns || []);
+    result.columns.forEach((c) => colSet.add(c));
+    rowsBySource[sourceKey] = {
+      ...rowsBySource[sourceKey],
+      columns: Array.from(colSet),
+      rows: deduped
     };
-    pushTrace("Chain fetch completed.", {
-      source: edge.to,
-      rowsFetched: result.rows.length,
-      columnsFetched: result.columns.length
-    });
   }
 
-  const mergedRows = mergeChainJoinEdges(
-    chainEdges,
+  let fetchPass = 0;
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    fetchPass += 1;
+    if (fetchPass > 50) {
+      throw new Error(
+        "Could not finish fetching related rows — check mappings form a connected graph from the lookup table."
+      );
+    }
+
+    for (const mapping of normalizedMappings) {
+      const leftSourceKey = resolveSourceKey(
+        orderedSelectedSources,
+        mapping.leftDatabase,
+        mapping.leftEntity,
+        mapping.leftSourceId
+      );
+      const rightSourceKey = resolveSourceKey(
+        orderedSelectedSources,
+        mapping.rightDatabase,
+        mapping.rightEntity,
+        mapping.rightSourceId
+      );
+      const leftRows = rowsBySource[leftSourceKey]?.rows || [];
+      const rightRows = rowsBySource[rightSourceKey]?.rows || [];
+      const leftFetched = leftRows.length > 0;
+      const rightFetched = rightRows.length > 0;
+
+      if (leftFetched && !rightFetched) {
+        const targetSource = orderedSelectedSources.find(
+          (source) =>
+            getSourceKey(source.database, source.entity, source.sourceId) === rightSourceKey
+        );
+        const sourceValues = leftRows.map((row) => getNestedValue(row, mapping.leftField));
+        pushTrace("Graph fetch (unfetched right side).", {
+          pass: fetchPass,
+          from: `${leftSourceKey}.${mapping.leftField}`,
+          to: `${rightSourceKey}.${mapping.rightField}`,
+          castType: mapping.castType,
+          inputRowCount: sourceValues.length,
+          fromLookupSource: leftSourceKey === baseSourceKey
+        });
+        const result = await querySourceByMappedValues(
+          targetSource,
+          mapping.rightField,
+          sourceValues
+        );
+        mergeRowsIntoSourceSlot(rightSourceKey, result);
+        progressed = true;
+        pushTrace("Graph fetch completed.", {
+          source: rightSourceKey,
+          rowsFetched: result.rows.length,
+          columnsFetched: result.columns.length
+        });
+        continue;
+      }
+
+      if (rightFetched && !leftFetched) {
+        const targetSource = orderedSelectedSources.find(
+          (source) =>
+            getSourceKey(source.database, source.entity, source.sourceId) === leftSourceKey
+        );
+        const sourceValues = rightRows.map((row) => getNestedValue(row, mapping.rightField));
+        pushTrace("Graph fetch (unfetched left side).", {
+          pass: fetchPass,
+          from: `${rightSourceKey}.${mapping.rightField}`,
+          to: `${leftSourceKey}.${mapping.leftField}`,
+          castType: mapping.castType,
+          inputRowCount: sourceValues.length,
+          fromLookupSource: rightSourceKey === baseSourceKey
+        });
+        const result = await querySourceByMappedValues(
+          targetSource,
+          mapping.leftField,
+          sourceValues
+        );
+        mergeRowsIntoSourceSlot(leftSourceKey, result);
+        progressed = true;
+        pushTrace("Graph fetch completed.", {
+          source: leftSourceKey,
+          rowsFetched: result.rows.length,
+          columnsFetched: result.columns.length
+        });
+        continue;
+      }
+    }
+  }
+
+  const rowsForMerge = narrowRowsByLookupJoins(
+    orderedSelectedSources,
     rowsBySource,
-    orderedSelectedSources
+    normalizedMappings,
+    baseSourceKey
+  );
+  pushTrace("Narrowed row sets to lookup join scope.", {
+    perSource: Object.fromEntries(
+      Object.entries(rowsForMerge).map(([k, v]) => [k, v.rows.length])
+    )
+  });
+
+  const mergedRows = mergeAcrossSources(
+    orderedSelectedSources,
+    Object.fromEntries(
+      Object.entries(rowsForMerge).map(([sourceKey, value]) => [sourceKey, value.rows])
+    ),
+    normalizedMappings,
+    { keepUnmatched: true }
   );
   const debug = buildMergeDebugSummary(
     orderedSelectedSources,
-    rowsBySource,
+    rowsForMerge,
     normalizedMappings,
     baseSourceKey
   );
@@ -1132,7 +1375,7 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
     mergedColumns: Array.from(
       new Set(mergedRows.flatMap((row) => Object.keys(row)))
     ),
-    rowsBySource,
+    rowsBySource: rowsForMerge,
     debug
   };
 }
