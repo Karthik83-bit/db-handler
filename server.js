@@ -52,15 +52,16 @@ function normalizeEntities(entities) {
     .filter(Boolean);
 }
 
-function getSourceKey(database, entity) {
-  return `${database}:${entity}`;
+function getSourceKey(database, entity, sourceId = "") {
+  return `${database}:${entity}:${sourceId}`;
 }
 
 function parseSourceKey(sourceKey) {
-  const [database, ...entityParts] = String(sourceKey || "").split(":");
+  const [database = "", entity = "", sourceId = ""] = String(sourceKey || "").split(":");
   return {
     database,
-    entity: entityParts.join(":")
+    entity,
+    sourceId
   };
 }
 
@@ -69,28 +70,28 @@ function normalizeSelectedSources(sources) {
     return [];
   }
 
-  const uniqueSources = new Map();
+  return sources
+    .map((source, index) => {
+      const database = String(source?.database || "").trim();
+      const entity = String(source?.entity || "").trim();
+      const sourceId = String(source?.sourceId || `source-${index + 1}`).trim();
 
-  sources.forEach((source) => {
-    const database = String(source?.database || "").trim();
-    const entity = String(source?.entity || "").trim();
+      if (!database || !entity) {
+        return null;
+      }
 
-    if (!database || !entity) {
-      return;
-    }
-
-    uniqueSources.set(getSourceKey(database, entity), {
-      database,
-      entity,
-      selectedFields: Array.isArray(source?.selectedFields)
-        ? source.selectedFields
-            .map((field) => String(field || "").trim())
-            .filter(Boolean)
-        : []
-    });
-  });
-
-  return Array.from(uniqueSources.values());
+      return {
+        sourceId,
+        database,
+        entity,
+        selectedFields: Array.isArray(source?.selectedFields)
+          ? source.selectedFields
+              .map((field) => String(field || "").trim())
+              .filter(Boolean)
+          : []
+      };
+    })
+    .filter(Boolean);
 }
 
 function normalizeMergeMappings(mappings) {
@@ -100,9 +101,11 @@ function normalizeMergeMappings(mappings) {
 
   return mappings
     .map((mapping) => ({
+      leftSourceId: String(mapping?.leftSourceId || "").trim(),
       leftDatabase: String(mapping?.leftDatabase || "").trim(),
       leftEntity: String(mapping?.leftEntity || "").trim(),
       leftField: String(mapping?.leftField || "").trim(),
+      rightSourceId: String(mapping?.rightSourceId || "").trim(),
       rightDatabase: String(mapping?.rightDatabase || "").trim(),
       rightEntity: String(mapping?.rightEntity || "").trim(),
       rightField: String(mapping?.rightField || "").trim(),
@@ -126,6 +129,7 @@ function normalizeSourceFilters(filters) {
 
   return filters
     .map((filter) => ({
+      sourceId: String(filter?.sourceId || "").trim(),
       database: String(filter?.database || "").trim(),
       entity: String(filter?.entity || "").trim(),
       field: String(filter?.field || "").trim(),
@@ -691,17 +695,54 @@ async function runEntityQuery(database, environment, entity, filters) {
   }
 }
 
+function resolveSourceKey(selectedSources, database, entity, sourceId) {
+  const candidates = selectedSources.filter(
+    (source) => source.database === database && source.entity === entity
+  );
+
+  if (!candidates.length) {
+    throw new Error("Each mapping must point to a selected table or collection.");
+  }
+
+  if (sourceId) {
+    const exact = candidates.find((source) => source.sourceId === sourceId);
+    if (!exact) {
+      throw new Error("Each mapping must point to a selected table or collection.");
+    }
+    return getSourceKey(exact.database, exact.entity, exact.sourceId);
+  }
+
+  if (candidates.length > 1) {
+    throw new Error(
+      "Mapping is ambiguous. Select a specific source when using the same table or collection more than once."
+    );
+  }
+
+  const [candidate] = candidates;
+  return getSourceKey(candidate.database, candidate.entity, candidate.sourceId);
+}
+
 function validateMergeGraph(selectedSources, mappings) {
   const sourceKeys = selectedSources.map((source) =>
-    getSourceKey(source.database, source.entity)
+    getSourceKey(source.database, source.entity, source.sourceId)
   );
 
   const knownSources = new Set(sourceKeys);
   const adjacency = new Map(sourceKeys.map((sourceKey) => [sourceKey, new Set()]));
 
   mappings.forEach((mapping) => {
-    const leftSourceKey = getSourceKey(mapping.leftDatabase, mapping.leftEntity);
-    const rightSourceKey = getSourceKey(mapping.rightDatabase, mapping.rightEntity);
+    const leftSourceKey = resolveSourceKey(
+      selectedSources,
+      mapping.leftDatabase,
+      mapping.leftEntity,
+      mapping.leftSourceId
+    );
+    const rightSourceKey = resolveSourceKey(
+      selectedSources,
+      mapping.rightDatabase,
+      mapping.rightEntity,
+      mapping.rightSourceId
+    );
 
     if (!knownSources.has(leftSourceKey) || !knownSources.has(rightSourceKey)) {
       throw new Error("Each mapping must point to a selected table or collection.");
@@ -742,7 +783,7 @@ function flattenMergedGroup(group, selectedSources) {
   const flattened = {};
 
   selectedSources.forEach((source) => {
-    const sourceKey = getSourceKey(source.database, source.entity);
+    const sourceKey = getSourceKey(source.database, source.entity, source.sourceId);
     const row = group[sourceKey];
     const selectedFields =
       Array.isArray(source.selectedFields) && source.selectedFields.length
@@ -767,7 +808,7 @@ function flattenMergedGroup(group, selectedSources) {
 
 function mergeAcrossSources(selectedSources, rowsBySource, mappings) {
   const sourceKeys = selectedSources.map((source) =>
-    getSourceKey(source.database, source.entity)
+    getSourceKey(source.database, source.entity, source.sourceId)
   );
   const [baseSourceKey] = sourceKeys;
   let mergedGroups = (rowsBySource[baseSourceKey] || []).map((row) => ({
@@ -781,8 +822,18 @@ function mergeAcrossSources(selectedSources, rowsBySource, mappings) {
 
     for (const pendingSourceKey of Array.from(pendingSources)) {
       const relatedMappings = mappings.filter((mapping) => {
-        const leftSourceKey = getSourceKey(mapping.leftDatabase, mapping.leftEntity);
-        const rightSourceKey = getSourceKey(mapping.rightDatabase, mapping.rightEntity);
+        const leftSourceKey = resolveSourceKey(
+          selectedSources,
+          mapping.leftDatabase,
+          mapping.leftEntity,
+          mapping.leftSourceId
+        );
+        const rightSourceKey = resolveSourceKey(
+          selectedSources,
+          mapping.rightDatabase,
+          mapping.rightEntity,
+          mapping.rightSourceId
+        );
 
         return (
           (leftSourceKey === pendingSourceKey && resolvedSources.has(rightSourceKey)) ||
@@ -800,8 +851,18 @@ function mergeAcrossSources(selectedSources, rowsBySource, mappings) {
       mergedGroups.forEach((group) => {
         const matches = sourceRows.filter((sourceRow) =>
           relatedMappings.every((mapping) => {
-            const leftSourceKey = getSourceKey(mapping.leftDatabase, mapping.leftEntity);
-            const rightSourceKey = getSourceKey(mapping.rightDatabase, mapping.rightEntity);
+            const leftSourceKey = resolveSourceKey(
+              selectedSources,
+              mapping.leftDatabase,
+              mapping.leftEntity,
+              mapping.leftSourceId
+            );
+            const rightSourceKey = resolveSourceKey(
+              selectedSources,
+              mapping.rightDatabase,
+              mapping.rightEntity,
+              mapping.rightSourceId
+            );
             const leftRow =
               leftSourceKey === pendingSourceKey
                 ? sourceRow
@@ -875,7 +936,9 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
       const filtersForSource = normalizedSourceFilters
         .filter(
           (filter) =>
-            filter.database === source.database && filter.entity === source.entity
+            filter.database === source.database &&
+            filter.entity === source.entity &&
+            (!filter.sourceId || filter.sourceId === source.sourceId)
         )
         .map((filter) => {
           assertValidFieldPath(filter.field, "filter field");
@@ -894,8 +957,9 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
       );
 
       return [
-        getSourceKey(source.database, source.entity),
+        getSourceKey(source.database, source.entity, source.sourceId),
         {
+          sourceId: source.sourceId,
           database: source.database,
           entity: source.entity,
           columns: result.columns,

@@ -17,8 +17,9 @@
         <p class="eyebrow">Cross-database mapping studio</p>
         <h1>Merge rows across PostgreSQL, MongoDB, and Cassandra</h1>
         <p class="subtitle">
-          Connect every database, choose one table or collection from each, map
-          foreign-key-like fields, and merge records with explicit type casting.
+          Connect every database, add multiple tables or collections from each
+          one, map foreign-key-like fields, and merge records with explicit type
+          casting.
         </p>
       </section>
 
@@ -47,17 +48,17 @@
               <h3>PostgreSQL</h3>
               <span id="status-postgres" class="status-pill">Not connected</span>
             </div>
-            <label class="label" for="entity-postgres">Table</label>
-            <select id="entity-postgres" class="select" disabled></select>
-            <label class="label">Fields</label>
-            <div id="fields-postgres" class="field-list compact"></div>
-            <label class="label" for="selected-fields-postgres">Output fields</label>
-            <select
-              id="selected-fields-postgres"
-              class="select multi-select"
-              multiple
-              disabled
-            ></select>
+            <div class="controls compact-controls">
+              <button
+                id="add-source-postgres"
+                class="button secondary"
+                type="button"
+                disabled
+              >
+                Add Table
+              </button>
+            </div>
+            <div id="sources-postgres" class="source-list"></div>
           </article>
 
           <article class="db-card" data-database="mongodb">
@@ -65,17 +66,17 @@
               <h3>MongoDB</h3>
               <span id="status-mongodb" class="status-pill">Not connected</span>
             </div>
-            <label class="label" for="entity-mongodb">Collection</label>
-            <select id="entity-mongodb" class="select" disabled></select>
-            <label class="label">Fields</label>
-            <div id="fields-mongodb" class="field-list compact"></div>
-            <label class="label" for="selected-fields-mongodb">Output fields</label>
-            <select
-              id="selected-fields-mongodb"
-              class="select multi-select"
-              multiple
-              disabled
-            ></select>
+            <div class="controls compact-controls">
+              <button
+                id="add-source-mongodb"
+                class="button secondary"
+                type="button"
+                disabled
+              >
+                Add Collection
+              </button>
+            </div>
+            <div id="sources-mongodb" class="source-list"></div>
           </article>
 
           <article class="db-card" data-database="cassandra">
@@ -83,17 +84,17 @@
               <h3>Cassandra</h3>
               <span id="status-cassandra" class="status-pill">Not connected</span>
             </div>
-            <label class="label" for="entity-cassandra">Table</label>
-            <select id="entity-cassandra" class="select" disabled></select>
-            <label class="label">Fields</label>
-            <div id="fields-cassandra" class="field-list compact"></div>
-            <label class="label" for="selected-fields-cassandra">Output fields</label>
-            <select
-              id="selected-fields-cassandra"
-              class="select multi-select"
-              multiple
-              disabled
-            ></select>
+            <div class="controls compact-controls">
+              <button
+                id="add-source-cassandra"
+                class="button secondary"
+                type="button"
+                disabled
+              >
+                Add Table
+              </button>
+            </div>
+            <div id="sources-cassandra" class="source-list"></div>
           </article>
         </div>
 
@@ -157,6 +158,28 @@
         </div>
 
         <div id="mergeSummary" class="query-meta"></div>
+        <div id="outputFilterCard" class="seed-filter-card hidden">
+          <div class="explorer-header">
+            <div>
+              <p class="eyebrow">Step 4</p>
+              <h2 class="section-title">Filter output fields</h2>
+            </div>
+          </div>
+          <div class="form-grid seed-grid">
+            <div>
+              <label for="outputFieldSearch" class="label">Search output fields</label>
+              <input
+                id="outputFieldSearch"
+                class="input"
+                placeholder="type a field name..."
+              />
+            </div>
+            <div>
+              <label for="outputFieldFilter" class="label">Visible output fields</label>
+              <select id="outputFieldFilter" class="select multi-select" multiple></select>
+            </div>
+          </div>
+        </div>
         <div id="sourceSummary" class="summary-grid"></div>
         <div id="mergedTableWrapper" class="table-wrapper hidden"></div>
         <pre id="mergedJson" class="result hidden"></pre>

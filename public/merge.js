@@ -1,6 +1,5 @@
 const DATABASES = ["postgres", "mongodb", "cassandra"];
 const CAST_TYPES = ["auto", "string", "number", "boolean", "date"];
-
 const environmentSelect = document.getElementById("mergeEnvironment");
 const connectAllBtn = document.getElementById("connectAllBtn");
 const connectResult = document.getElementById("connectResult");
@@ -11,14 +10,19 @@ const addMappingBtn = document.getElementById("addMappingBtn");
 const mappingRows = document.getElementById("mappingRows");
 const runCrossMergeBtn = document.getElementById("runCrossMergeBtn");
 const mergeSummary = document.getElementById("mergeSummary");
+const outputFilterCard = document.getElementById("outputFilterCard");
+const outputFieldSearchInput = document.getElementById("outputFieldSearch");
+const outputFieldFilterSelect = document.getElementById("outputFieldFilter");
 const sourceSummary = document.getElementById("sourceSummary");
 const mergedTableWrapper = document.getElementById("mergedTableWrapper");
 const mergedJson = document.getElementById("mergedJson");
-
 const state = {
   entitiesByDatabase: {},
   fieldsBySource: {},
-  connectedDatabases: new Set()
+  connectedDatabases: new Set(),
+  sourceCounter: 0,
+  lastMergeData: null,
+  mergedColumns: []
 };
 
 function renderJsonResult(element, payload) {
@@ -28,116 +32,37 @@ function renderJsonResult(element, payload) {
 
 function hideMergeResults() {
   mergeSummary.textContent = "";
+  outputFilterCard.classList.add("hidden");
+  outputFieldSearchInput.value = "";
+  outputFieldFilterSelect.innerHTML = "";
   sourceSummary.innerHTML = "";
   mergedTableWrapper.classList.add("hidden");
   mergedTableWrapper.innerHTML = "";
   mergedJson.classList.add("hidden");
   mergedJson.textContent = "";
+  state.lastMergeData = null;
+  state.mergedColumns = [];
 }
 
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const payload = await response.json();
-
-  if (!response.ok) {
-    throw new Error(payload.error || payload.message || "Request failed.");
-  }
-
+  if (!response.ok) throw new Error(payload.error || payload.message || "Request failed.");
   return payload;
 }
 
 function populateSelect(selectElement, items, placeholder) {
   selectElement.innerHTML = "";
-
   const placeholderOption = document.createElement("option");
   placeholderOption.value = "";
   placeholderOption.textContent = placeholder;
   selectElement.appendChild(placeholderOption);
-
   items.forEach((item) => {
     const option = document.createElement("option");
     option.value = item.value;
     option.textContent = item.label;
     selectElement.appendChild(option);
   });
-}
-
-function getEntitySelect(database) {
-  return document.getElementById(`entity-${database}`);
-}
-
-function getSelectedFieldsSelect(database) {
-  return document.getElementById(`selected-fields-${database}`);
-}
-
-function getFieldList(database) {
-  return document.getElementById(`fields-${database}`);
-}
-
-function getStatusPill(database) {
-  return document.getElementById(`status-${database}`);
-}
-
-function getSelectedSources() {
-  return DATABASES.map((database) => ({
-    database,
-    entity: getEntitySelect(database).value,
-    selectedFields: Array.from(getSelectedFieldsSelect(database).selectedOptions).map(
-      (option) => option.value
-    )
-  })).filter((source) => source.entity);
-}
-
-function getSourceOptions() {
-  return getSelectedSources().map((source) => ({
-    value: `${source.database}:${source.entity}`,
-    label: `${source.database.toUpperCase()} / ${source.entity}`
-  }));
-}
-
-function getSourceFields(sourceKey) {
-  return state.fieldsBySource[sourceKey] || [];
-}
-
-function renderFieldList(database, fields) {
-  const fieldList = getFieldList(database);
-  fieldList.innerHTML = "";
-
-  if (!fields.length) {
-    fieldList.innerHTML = '<span class="field-chip">No fields found.</span>';
-    return;
-  }
-
-  fields.forEach((field) => {
-    const chip = document.createElement("span");
-    chip.className = "field-chip";
-    chip.textContent = `${field.name} - ${field.type}`;
-    fieldList.appendChild(chip);
-  });
-}
-
-function renderSelectedFieldOptions(database, fields) {
-  const select = getSelectedFieldsSelect(database);
-  const previousSelection = new Set(
-    Array.from(select.selectedOptions).map((option) => option.value)
-  );
-
-  select.innerHTML = "";
-  select.disabled = !fields.length;
-
-  fields.forEach((field) => {
-    const option = document.createElement("option");
-    option.value = field.name;
-    option.textContent = `${field.name} (${field.type})`;
-    option.selected = previousSelection.size === 0 || previousSelection.has(field.name);
-    select.appendChild(option);
-  });
-}
-
-function updateStatus(database, text, tone = "idle") {
-  const pill = getStatusPill(database);
-  pill.textContent = text;
-  pill.dataset.tone = tone;
 }
 
 function createOptionElements(items) {
@@ -149,214 +74,277 @@ function createOptionElements(items) {
   });
 }
 
+function getStatusPill(database) { return document.getElementById(`status-${database}`); }
+function getSourceContainer(database) { return document.getElementById(`sources-${database}`); }
+function getAddSourceButton(database) { return document.getElementById(`add-source-${database}`); }
+function getSourceKey(database, entity, sourceId = "") {
+  return `${database}:${entity}:${sourceId}`;
+}
+function parseSourceKey(sourceKey) {
+  const [database = "", entity = "", sourceId = ""] = String(sourceKey || "").split(":");
+  return { database, entity, sourceId };
+}
+function getSourceFields(sourceKey) { return state.fieldsBySource[sourceKey] || []; }
+
+function getSelectedSourceCards() {
+  return Array.from(document.querySelectorAll(".source-card")).filter((card) => card.querySelector('[data-role="entity"]').value);
+}
+
+function getSelectedSources() {
+  return getSelectedSourceCards().map((card) => ({
+    sourceId: card.dataset.sourceId,
+    database: card.dataset.database,
+    entity: card.querySelector('[data-role="entity"]').value,
+    selectedFields: Array.from(card.querySelector('[data-role="selected-fields"]').selectedOptions).map((option) => option.value)
+  }));
+}
+
+function getSourceOptions() {
+  return getSelectedSources().map((source) => ({
+    value: getSourceKey(source.database, source.entity, source.sourceId),
+    label: `${source.database.toUpperCase()} / ${source.entity}`
+  }));
+}
+
+function renderFieldList(fieldList, fields) {
+  fieldList.innerHTML = fields.length ? "" : '<span class="field-chip">No fields found.</span>';
+  fields.forEach((field) => {
+    const chip = document.createElement("span");
+    chip.className = "field-chip";
+    chip.textContent = `${field.name} - ${field.type}`;
+    fieldList.appendChild(chip);
+  });
+}
+
+function renderSelectedFieldOptions(select, fields) {
+  const previous = new Set(Array.from(select.selectedOptions).map((option) => option.value));
+  select.innerHTML = "";
+  select.disabled = !fields.length;
+  fields.forEach((field) => {
+    const option = document.createElement("option");
+    option.value = field.name;
+    option.textContent = `${field.name} (${field.type})`;
+    option.selected = previous.size === 0 || previous.has(field.name);
+    select.appendChild(option);
+  });
+}
+
+function updateStatus(database, text, tone = "idle") {
+  const pill = getStatusPill(database);
+  pill.textContent = text;
+  pill.dataset.tone = tone;
+}
+
 function refreshFieldOptions(row) {
-  const leftSource = row.querySelector('[data-role="left-source"]').value;
-  const rightSource = row.querySelector('[data-role="right-source"]').value;
-  const leftFieldSelect = row.querySelector('[data-role="left-field"]');
-  const rightFieldSelect = row.querySelector('[data-role="right-field"]');
-  const leftSelected = leftFieldSelect.value;
-  const rightSelected = rightFieldSelect.value;
-
-  leftFieldSelect.innerHTML = "";
-  rightFieldSelect.innerHTML = "";
-
-  createOptionElements(
-    getSourceFields(leftSource).map((field) => ({
+  [["left-source", "left-field"], ["right-source", "right-field"]].forEach(([sourceRole, fieldRole]) => {
+    const sourceValue = row.querySelector(`[data-role="${sourceRole}"]`).value;
+    const select = row.querySelector(`[data-role="${fieldRole}"]`);
+    const current = select.value;
+    select.innerHTML = "";
+    createOptionElements(getSourceFields(sourceValue).map((field) => ({
       value: field.name,
       label: `${field.name} (${field.type})`
-    }))
-  ).forEach((option) => leftFieldSelect.appendChild(option));
-
-  createOptionElements(
-    getSourceFields(rightSource).map((field) => ({
-      value: field.name,
-      label: `${field.name} (${field.type})`
-    }))
-  ).forEach((option) => rightFieldSelect.appendChild(option));
-
-  if (leftSelected) {
-    leftFieldSelect.value = leftSelected;
-  }
-
-  if (rightSelected) {
-    rightFieldSelect.value = rightSelected;
-  }
+    }))).forEach((option) => select.appendChild(option));
+    if (current) select.value = current;
+  });
 }
 
 function refreshMappingRowSources() {
   const sourceOptions = getSourceOptions();
-
   Array.from(mappingRows.querySelectorAll(".mapping-row")).forEach((row) => {
-    const leftSourceSelect = row.querySelector('[data-role="left-source"]');
-    const rightSourceSelect = row.querySelector('[data-role="right-source"]');
-    const currentLeft = leftSourceSelect.value;
-    const currentRight = rightSourceSelect.value;
-
-    leftSourceSelect.innerHTML = "";
-    rightSourceSelect.innerHTML = "";
-
-    createOptionElements(sourceOptions).forEach((option) =>
-      leftSourceSelect.appendChild(option)
-    );
-    createOptionElements(sourceOptions).forEach((option) =>
-      rightSourceSelect.appendChild(option)
-    );
-
-    if (currentLeft) {
-      leftSourceSelect.value = currentLeft;
-    }
-
-    if (currentRight) {
-      rightSourceSelect.value = currentRight;
-    }
-
+    const left = row.querySelector('[data-role="left-source"]');
+    const right = row.querySelector('[data-role="right-source"]');
+    const currentLeft = left.value;
+    const currentRight = right.value;
+    left.innerHTML = "";
+    right.innerHTML = "";
+    createOptionElements(sourceOptions).forEach((option) => left.appendChild(option));
+    createOptionElements(sourceOptions).forEach((option) => right.appendChild(option));
+    if (currentLeft) left.value = currentLeft;
+    if (currentRight) right.value = currentRight;
     refreshFieldOptions(row);
   });
 }
 
+function refreshSeedFieldOptions() {
+  const current = seedFieldSelect.value;
+  seedFieldSelect.innerHTML = "";
+  createOptionElements(getSourceFields(seedSourceSelect.value).map((field) => ({
+    value: field.name,
+    label: `${field.name} (${field.type})`
+  }))).forEach((option) => seedFieldSelect.appendChild(option));
+  if (current) seedFieldSelect.value = current;
+}
+
 function refreshSeedSourceOptions() {
-  const sourceOptions = getSourceOptions();
-  const currentSource = seedSourceSelect.value;
-
+  const current = seedSourceSelect.value;
   seedSourceSelect.innerHTML = "";
-  createOptionElements(sourceOptions).forEach((option) =>
-    seedSourceSelect.appendChild(option)
-  );
-
-  if (currentSource) {
-    seedSourceSelect.value = currentSource;
-  }
-
+  createOptionElements(getSourceOptions()).forEach((option) => seedSourceSelect.appendChild(option));
+  if (current) seedSourceSelect.value = current;
   refreshSeedFieldOptions();
+}
+
+function clearSourceCard(card) {
+  renderFieldList(card.querySelector('[data-role="field-list"]'), []);
+  renderSelectedFieldOptions(card.querySelector('[data-role="selected-fields"]'), []);
+}
+
+async function loadFieldsForCard(card) {
+  const entity = card.querySelector('[data-role="entity"]').value;
+  if (!entity) {
+    clearSourceCard(card);
+    refreshMappingRowSources();
+    refreshSeedSourceOptions();
+    return;
+  }
+  const database = card.dataset.database;
+  const sourceId = card.dataset.sourceId;
+  const data = await fetchJson(`/api/entity-fields?environment=${encodeURIComponent(environmentSelect.value)}&database=${encodeURIComponent(database)}&entity=${encodeURIComponent(entity)}`);
+  state.fieldsBySource[getSourceKey(database, entity, sourceId)] = data.fields;
+  renderFieldList(card.querySelector('[data-role="field-list"]'), data.fields);
+  renderSelectedFieldOptions(card.querySelector('[data-role="selected-fields"]'), data.fields);
+  refreshMappingRowSources();
+  refreshSeedSourceOptions();
+}
+
+function createSourceCard(database) {
+  state.sourceCounter += 1;
+  const entityLabel = database === "mongodb" ? "Collection" : "Table";
+  const card = document.createElement("div");
+  card.className = "source-card";
+  card.dataset.database = database;
+  card.dataset.sourceId = `${database}-${state.sourceCounter}`;
+  card.innerHTML = `
+    <div class="source-card-header">
+      <h4>${entityLabel} Source</h4>
+      <button type="button" class="button secondary" data-role="remove-source">Remove</button>
+    </div>
+    <label class="label">${entityLabel}</label>
+    <select class="select" data-role="entity"></select>
+    <label class="label">Fields</label>
+    <div class="field-list compact" data-role="field-list"></div>
+    <label class="label">Output fields</label>
+    <select class="select multi-select" data-role="selected-fields" multiple disabled></select>
+  `;
+  populateSelect(card.querySelector('[data-role="entity"]'), state.entitiesByDatabase[database] || [], `Choose a ${database === "mongodb" ? "collection" : "table"}`);
+  card.querySelector('[data-role="entity"]').addEventListener("change", async () => {
+    hideMergeResults();
+    await loadFieldsForCard(card);
+  });
+  card.querySelector('[data-role="selected-fields"]').addEventListener("change", hideMergeResults);
+  card.querySelector('[data-role="remove-source"]').addEventListener("click", () => {
+    const entityValue = card.querySelector('[data-role="entity"]').value;
+    if (entityValue) {
+      delete state.fieldsBySource[getSourceKey(database, entityValue, card.dataset.sourceId)];
+    }
+    card.remove();
+    refreshMappingRowSources();
+    refreshSeedSourceOptions();
+    hideMergeResults();
+  });
+  clearSourceCard(card);
+  return card;
+}
+
+function ensureAtLeastOneSourceCard(database) {
+  const container = getSourceContainer(database);
+  if (!container.children.length) container.appendChild(createSourceCard(database));
+}
+
+function resetDatabaseSources(database) {
+  getSourceContainer(database).innerHTML = "";
+  if (state.connectedDatabases.has(database)) ensureAtLeastOneSourceCard(database);
 }
 
 function createMappingRow() {
   const row = document.createElement("div");
   row.className = "mapping-row";
-
-  const leftSourceSelect = document.createElement("select");
-  leftSourceSelect.className = "select";
-  leftSourceSelect.dataset.role = "left-source";
-
-  const leftFieldSelect = document.createElement("select");
-  leftFieldSelect.className = "select";
-  leftFieldSelect.dataset.role = "left-field";
-
-  const rightSourceSelect = document.createElement("select");
-  rightSourceSelect.className = "select";
-  rightSourceSelect.dataset.role = "right-source";
-
-  const rightFieldSelect = document.createElement("select");
-  rightFieldSelect.className = "select";
-  rightFieldSelect.dataset.role = "right-field";
-
-  const castTypeSelect = document.createElement("select");
-  castTypeSelect.className = "select";
-  castTypeSelect.dataset.role = "cast-type";
+  row.innerHTML = `
+    <select class="select" data-role="left-source"></select>
+    <select class="select" data-role="left-field"></select>
+    <select class="select" data-role="right-source"></select>
+    <select class="select" data-role="right-field"></select>
+    <select class="select" data-role="cast-type"></select>
+    <button type="button" class="button secondary" data-role="remove-row">Remove</button>
+  `;
   CAST_TYPES.forEach((type) => {
     const option = document.createElement("option");
     option.value = type;
     option.textContent = type;
-    castTypeSelect.appendChild(option);
+    row.querySelector('[data-role="cast-type"]').appendChild(option);
   });
-
-  const removeButton = document.createElement("button");
-  removeButton.type = "button";
-  removeButton.className = "button secondary";
-  removeButton.textContent = "Remove";
-  removeButton.addEventListener("click", () => {
-    row.remove();
-  });
-
-  leftSourceSelect.addEventListener("change", () => refreshFieldOptions(row));
-  rightSourceSelect.addEventListener("change", () => refreshFieldOptions(row));
-
-  row.appendChild(leftSourceSelect);
-  row.appendChild(leftFieldSelect);
-  row.appendChild(rightSourceSelect);
-  row.appendChild(rightFieldSelect);
-  row.appendChild(castTypeSelect);
-  row.appendChild(removeButton);
-
+  row.querySelector('[data-role="left-source"]').addEventListener("change", () => refreshFieldOptions(row));
+  row.querySelector('[data-role="right-source"]').addEventListener("change", () => refreshFieldOptions(row));
+  row.querySelector('[data-role="remove-row"]').addEventListener("click", () => row.remove());
   mappingRows.appendChild(row);
   refreshMappingRowSources();
-
-  const sourceOptions = getSourceOptions();
-  if (sourceOptions.length >= 2) {
-    leftSourceSelect.value = sourceOptions[0].value;
-    rightSourceSelect.value = sourceOptions[1].value;
+  const options = getSourceOptions();
+  if (options.length >= 2) {
+    row.querySelector('[data-role="left-source"]').value = options[0].value;
+    row.querySelector('[data-role="right-source"]').value = options[1].value;
     refreshFieldOptions(row);
   }
 }
 
-function refreshSeedFieldOptions() {
-  const currentField = seedFieldSelect.value;
-  const selectedSource = seedSourceSelect.value;
-
-  seedFieldSelect.innerHTML = "";
-  createOptionElements(
-    getSourceFields(selectedSource).map((field) => ({
-      value: field.name,
-      label: `${field.name} (${field.type})`
-    }))
-  ).forEach((option) => seedFieldSelect.appendChild(option));
-
-  if (currentField) {
-    seedFieldSelect.value = currentField;
-  }
-}
-
 function getMappings() {
-  return Array.from(mappingRows.querySelectorAll(".mapping-row"))
-    .map((row) => {
-      const leftSource = row.querySelector('[data-role="left-source"]').value;
-      const leftField = row.querySelector('[data-role="left-field"]').value;
-      const rightSource = row.querySelector('[data-role="right-source"]').value;
-      const rightField = row.querySelector('[data-role="right-field"]').value;
-      const castType = row.querySelector('[data-role="cast-type"]').value;
-      const [leftDatabase, leftEntity] = leftSource.split(":");
-      const [rightDatabase, rightEntity] = rightSource.split(":");
-
-      return {
-        leftDatabase,
-        leftEntity,
-        leftField,
-        rightDatabase,
-        rightEntity,
-        rightField,
-        castType
-      };
-    })
-    .filter(
-      (mapping) =>
-        mapping.leftDatabase &&
-        mapping.leftEntity &&
-        mapping.leftField &&
-        mapping.rightDatabase &&
-        mapping.rightEntity &&
-        mapping.rightField
-    );
+  return Array.from(mappingRows.querySelectorAll(".mapping-row")).map((row) => {
+    const left = parseSourceKey(row.querySelector('[data-role="left-source"]').value);
+    const right = parseSourceKey(row.querySelector('[data-role="right-source"]').value);
+    return {
+      leftSourceId: left.sourceId,
+      leftDatabase: left.database,
+      leftEntity: left.entity,
+      leftField: row.querySelector('[data-role="left-field"]').value,
+      rightSourceId: right.sourceId,
+      rightDatabase: right.database,
+      rightEntity: right.entity,
+      rightField: row.querySelector('[data-role="right-field"]').value,
+      castType: row.querySelector('[data-role="cast-type"]').value
+    };
+  }).filter((mapping) => mapping.leftDatabase && mapping.leftEntity && mapping.leftField && mapping.rightDatabase && mapping.rightEntity && mapping.rightField);
 }
 
 function getSourceFilters() {
-  const source = seedSourceSelect.value;
-  const field = seedFieldSelect.value;
   const value = seedValueInput.value.trim();
+  if (!seedSourceSelect.value || !seedFieldSelect.value || value === "") return [];
+  const { database, entity, sourceId } = parseSourceKey(seedSourceSelect.value);
+  return [{ sourceId, database, entity, field: seedFieldSelect.value, value }];
+}
 
-  if (!source || !field || value === "") {
-    return [];
-  }
+function getVisibleMergedColumns() {
+  const selected = Array.from(outputFieldFilterSelect.selectedOptions).map((option) => option.value);
+  return selected.length ? selected : state.mergedColumns;
+}
 
-  const [database, entity] = source.split(":");
+function applyOutputFieldFilterFromUI() {
+  if (!state.lastMergeData) return;
+  const visibleColumns = getVisibleMergedColumns();
+  const filteredRows = state.lastMergeData.mergedRows.map((row) => {
+    const filteredRow = {};
+    visibleColumns.forEach((column) => {
+      if (Object.prototype.hasOwnProperty.call(row, column)) {
+        filteredRow[column] = row[column];
+      }
+    });
+    return filteredRow;
+  });
+  renderTable(visibleColumns, filteredRows);
+}
 
-  return [
-    {
-      database,
-      entity,
-      field,
-      value
-    }
-  ];
+function refreshOutputFieldOptions() {
+  if (!state.lastMergeData) return;
+  const term = outputFieldSearchInput.value.trim().toLowerCase();
+  const selectedBefore = new Set(Array.from(outputFieldFilterSelect.selectedOptions).map((option) => option.value));
+  outputFieldFilterSelect.innerHTML = "";
+  state.mergedColumns
+    .filter((column) => !term || column.toLowerCase().includes(term))
+    .forEach((column) => {
+      const option = document.createElement("option");
+      option.value = column;
+      option.textContent = column;
+      option.selected = selectedBefore.size === 0 || selectedBefore.has(column);
+      outputFieldFilterSelect.appendChild(option);
+    });
 }
 
 function renderTable(columns, rows) {
@@ -365,35 +353,20 @@ function renderTable(columns, rows) {
     mergedTableWrapper.innerHTML = "";
     return;
   }
-
   const table = document.createElement("table");
   table.className = "data-table";
-
-  const thead = document.createElement("thead");
-  const headRow = document.createElement("tr");
-  columns.forEach((column) => {
-    const th = document.createElement("th");
-    th.textContent = column;
-    headRow.appendChild(th);
-  });
-  thead.appendChild(headRow);
-
+  table.innerHTML = `<thead><tr>${columns.map((column) => `<th>${column}</th>`).join("")}</tr></thead>`;
   const tbody = document.createElement("tbody");
   rows.forEach((row) => {
     const tr = document.createElement("tr");
     columns.forEach((column) => {
       const td = document.createElement("td");
       const value = row[column];
-      td.textContent =
-        value && typeof value === "object"
-          ? JSON.stringify(value)
-          : value ?? "";
+      td.textContent = value && typeof value === "object" ? JSON.stringify(value) : value ?? "";
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
   });
-
-  table.appendChild(thead);
   table.appendChild(tbody);
   mergedTableWrapper.innerHTML = "";
   mergedTableWrapper.appendChild(table);
@@ -402,16 +375,10 @@ function renderTable(columns, rows) {
 
 function renderSourceSummary(rowsBySource) {
   sourceSummary.innerHTML = "";
-
   Object.values(rowsBySource).forEach((source) => {
     const card = document.createElement("article");
     card.className = "summary-card";
-    card.innerHTML = `
-      <p class="eyebrow">${source.database.toUpperCase()}</p>
-      <h3>${source.entity}</h3>
-      <p>${source.rows.length} row(s) fetched</p>
-      <p>${source.columns.length} field(s) available</p>
-    `;
+    card.innerHTML = `<p class="eyebrow">${source.database.toUpperCase()}</p><h3>${source.entity}</h3><p>${source.rows.length} row(s) fetched</p><p>${source.columns.length} field(s) available</p>`;
     sourceSummary.appendChild(card);
   });
 }
@@ -420,117 +387,51 @@ async function loadDatabaseOptions() {
   try {
     const data = await fetchJson("/api/databases");
     populateSelect(environmentSelect, data.environments, "Choose environment");
-    connectResult.textContent =
-      "Choose an environment, then connect all databases.";
+    connectResult.textContent = "Choose an environment, then connect all databases.";
   } catch (error) {
-    connectResult.textContent = JSON.stringify(
-      {
-        success: false,
-        message: "Failed to load environments.",
-        error: error.message
-      },
-      null,
-      2
-    );
+    connectResult.textContent = JSON.stringify({ success: false, message: "Failed to load environments.", error: error.message }, null, 2);
   }
-}
-
-async function loadFields(database, entity) {
-  if (!entity) {
-    renderFieldList(database, []);
-    renderSelectedFieldOptions(database, []);
-    return;
-  }
-
-  const environment = environmentSelect.value;
-  const data = await fetchJson(
-    `/api/entity-fields?environment=${encodeURIComponent(environment)}&database=${encodeURIComponent(database)}&entity=${encodeURIComponent(entity)}`
-  );
-
-  const sourceKey = `${database}:${entity}`;
-  state.fieldsBySource[sourceKey] = data.fields;
-  renderFieldList(database, data.fields);
-  renderSelectedFieldOptions(database, data.fields);
-  refreshMappingRowSources();
-  refreshSeedSourceOptions();
 }
 
 async function loadEntities(database) {
-  const environment = environmentSelect.value;
-  const entitySelect = getEntitySelect(database);
-
-  const data = await fetchJson(
-    `/api/entities?environment=${encodeURIComponent(environment)}&database=${encodeURIComponent(database)}`
-  );
-
+  const data = await fetchJson(`/api/entities?environment=${encodeURIComponent(environmentSelect.value)}&database=${encodeURIComponent(database)}`);
   state.entitiesByDatabase[database] = data.entities;
-  entitySelect.disabled = false;
-  populateSelect(
-    entitySelect,
-    data.entities,
-    `Choose a ${database === "mongodb" ? "collection" : "table"}`
-  );
-  renderFieldList(database, []);
+  getAddSourceButton(database).disabled = false;
+  resetDatabaseSources(database);
 }
 
 async function handleConnectAll() {
-  const environment = environmentSelect.value;
-
-  if (!environment) {
-    connectResult.textContent = JSON.stringify(
-      {
-        success: false,
-        message: "Choose an environment first."
-      },
-      null,
-      2
-    );
+  if (!environmentSelect.value) {
+    connectResult.textContent = JSON.stringify({ success: false, message: "Choose an environment first." }, null, 2);
     return;
   }
-
   connectAllBtn.disabled = true;
   hideMergeResults();
   connectResult.textContent = "Connecting to PostgreSQL, MongoDB, and Cassandra...";
-
   const statuses = [];
   state.connectedDatabases.clear();
-
   try {
-    await Promise.all(
-      DATABASES.map(async (database) => {
-        updateStatus(database, "Connecting...", "pending");
-
-        try {
-          const result = await fetchJson("/api/connect", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              environment,
-              database
-            })
-          });
-
-          state.connectedDatabases.add(database);
-          updateStatus(database, "Connected", "success");
-          statuses.push(result);
-          await loadEntities(database);
-        } catch (error) {
-          updateStatus(database, "Failed", "error");
-          getEntitySelect(database).disabled = true;
-          getEntitySelect(database).innerHTML = "";
-          renderFieldList(database, []);
-          renderSelectedFieldOptions(database, []);
-          statuses.push({
-            database,
-            success: false,
-            error: error.message
-          });
-        }
-      })
-    );
-
+    await Promise.all(DATABASES.map(async (database) => {
+      updateStatus(database, "Connecting...", "pending");
+      try {
+        const result = await fetchJson("/api/connect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ environment: environmentSelect.value, database })
+        });
+        state.connectedDatabases.add(database);
+        updateStatus(database, "Connected", "success");
+        statuses.push(result);
+        await loadEntities(database);
+      } catch (error) {
+        updateStatus(database, "Failed", "error");
+        getAddSourceButton(database).disabled = true;
+        getSourceContainer(database).innerHTML = "";
+        statuses.push({ database, success: false, error: error.message });
+      }
+    }));
+    refreshMappingRowSources();
+    refreshSeedSourceOptions();
     connectResult.textContent = JSON.stringify(statuses, null, 2);
   } finally {
     connectAllBtn.disabled = false;
@@ -538,55 +439,52 @@ async function handleConnectAll() {
 }
 
 async function handleRunMerge() {
-  const sources = getSelectedSources();
-  const mappings = getMappings();
-  const sourceFilters = getSourceFilters();
-
   runCrossMergeBtn.disabled = true;
   hideMergeResults();
   mergeSummary.textContent = "Merging selected data...";
-
   try {
     const data = await fetchJson("/api/cross-merge", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         environment: environmentSelect.value,
-        sources,
-        mappings,
-        sourceFilters
+        sources: getSelectedSources(),
+        mappings: getMappings(),
+        sourceFilters: getSourceFilters()
       })
     });
-
+    state.lastMergeData = data;
+    state.mergedColumns = data.mergedColumns || [];
     mergeSummary.textContent = `${data.mergedCount} merged row(s) built from ${data.sources.length} selected data sources.`;
+    outputFilterCard.classList.remove("hidden");
+    refreshOutputFieldOptions();
+    applyOutputFieldFilterFromUI();
     renderSourceSummary(data.rowsBySource);
-    renderTable(data.mergedColumns, data.mergedRows);
     renderJsonResult(mergedJson, data);
   } catch (error) {
     mergeSummary.textContent = "Merge failed.";
-    renderJsonResult(mergedJson, {
-      success: false,
-      error: error.message
-    });
+    renderJsonResult(mergedJson, { success: false, error: error.message });
   } finally {
     runCrossMergeBtn.disabled = false;
   }
 }
 
 DATABASES.forEach((database) => {
-  getEntitySelect(database).addEventListener("change", async (event) => {
+  getAddSourceButton(database).addEventListener("click", () => {
+    getSourceContainer(database).appendChild(createSourceCard(database));
+    refreshMappingRowSources();
+    refreshSeedSourceOptions();
     hideMergeResults();
-    await loadFields(database, event.target.value);
   });
 });
 
 connectAllBtn.addEventListener("click", handleConnectAll);
-addMappingBtn.addEventListener("click", () => {
-  createMappingRow();
-});
+addMappingBtn.addEventListener("click", createMappingRow);
 runCrossMergeBtn.addEventListener("click", handleRunMerge);
 seedSourceSelect.addEventListener("change", refreshSeedFieldOptions);
-
+outputFieldSearchInput.addEventListener("input", () => {
+  refreshOutputFieldOptions();
+  applyOutputFieldFilterFromUI();
+});
+outputFieldFilterSelect.addEventListener("change", applyOutputFieldFilterFromUI);
 loadDatabaseOptions();
