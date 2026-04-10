@@ -29,7 +29,7 @@ body {
 }
 
 .app-shell {
-  width: min(920px, 100vw);
+  width: min(1200px, 100vw);
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -239,14 +239,16 @@ h1 {
 
 .table-wrapper {
   margin-top: 16px;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: auto;
   border-radius: 18px;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.7);
 }
 
 .data-table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
 }
 
@@ -256,6 +258,7 @@ h1 {
   border-bottom: 1px solid rgba(29, 36, 51, 0.08);
   text-align: left;
   vertical-align: top;
+  white-space: nowrap;
 }
 
 .data-table th {

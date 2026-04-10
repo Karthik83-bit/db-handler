@@ -13,6 +13,8 @@ const mergeSummary = document.getElementById("mergeSummary");
 const outputFilterCard = document.getElementById("outputFilterCard");
 const outputFieldSearchInput = document.getElementById("outputFieldSearch");
 const outputFieldFilterSelect = document.getElementById("outputFieldFilter");
+const selectAllOutputFieldsBtn = document.getElementById("selectAllOutputFieldsBtn");
+const clearOutputFieldsBtn = document.getElementById("clearOutputFieldsBtn");
 const sourceSummary = document.getElementById("sourceSummary");
 const mergedTableWrapper = document.getElementById("mergedTableWrapper");
 const mergedJson = document.getElementById("mergedJson");
@@ -106,13 +108,18 @@ function getSourceOptions() {
   }));
 }
 
-function renderFieldList(fieldList, fields) {
-  fieldList.innerHTML = fields.length ? "" : '<span class="field-chip">No fields found.</span>';
+function renderAvailableFieldOptions(selectElement, fields) {
+  selectElement.innerHTML = "";
+  selectElement.disabled = !fields.length;
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = fields.length ? "Open to view fields" : "No fields found";
+  selectElement.appendChild(placeholder);
   fields.forEach((field) => {
-    const chip = document.createElement("span");
-    chip.className = "field-chip";
-    chip.textContent = `${field.name} - ${field.type}`;
-    fieldList.appendChild(chip);
+    const option = document.createElement("option");
+    option.value = field.name;
+    option.textContent = `${field.name} (${field.type})`;
+    selectElement.appendChild(option);
   });
 }
 
@@ -124,7 +131,7 @@ function renderSelectedFieldOptions(select, fields) {
     const option = document.createElement("option");
     option.value = field.name;
     option.textContent = `${field.name} (${field.type})`;
-    option.selected = previous.size === 0 || previous.has(field.name);
+    option.selected = previous.has(field.name);
     select.appendChild(option);
   });
 }
@@ -185,7 +192,7 @@ function refreshSeedSourceOptions() {
 }
 
 function clearSourceCard(card) {
-  renderFieldList(card.querySelector('[data-role="field-list"]'), []);
+  renderAvailableFieldOptions(card.querySelector('[data-role="available-fields"]'), []);
   renderSelectedFieldOptions(card.querySelector('[data-role="selected-fields"]'), []);
 }
 
@@ -201,7 +208,7 @@ async function loadFieldsForCard(card) {
   const sourceId = card.dataset.sourceId;
   const data = await fetchJson(`/api/entity-fields?environment=${encodeURIComponent(environmentSelect.value)}&database=${encodeURIComponent(database)}&entity=${encodeURIComponent(entity)}`);
   state.fieldsBySource[getSourceKey(database, entity, sourceId)] = data.fields;
-  renderFieldList(card.querySelector('[data-role="field-list"]'), data.fields);
+  renderAvailableFieldOptions(card.querySelector('[data-role="available-fields"]'), data.fields);
   renderSelectedFieldOptions(card.querySelector('[data-role="selected-fields"]'), data.fields);
   refreshMappingRowSources();
   refreshSeedSourceOptions();
@@ -221,8 +228,8 @@ function createSourceCard(database) {
     </div>
     <label class="label">${entityLabel}</label>
     <select class="select" data-role="entity"></select>
-    <label class="label">Fields</label>
-    <div class="field-list compact" data-role="field-list"></div>
+    <label class="label">Available fields</label>
+    <select class="select" data-role="available-fields" disabled></select>
     <label class="label">Output fields</label>
     <select class="select multi-select" data-role="selected-fields" multiple disabled></select>
   `;
@@ -329,6 +336,20 @@ function applyOutputFieldFilterFromUI() {
     return filteredRow;
   });
   renderTable(visibleColumns, filteredRows);
+}
+
+function selectAllVisibleOutputFields() {
+  Array.from(outputFieldFilterSelect.options).forEach((option) => {
+    option.selected = true;
+  });
+  applyOutputFieldFilterFromUI();
+}
+
+function clearAllVisibleOutputFields() {
+  Array.from(outputFieldFilterSelect.options).forEach((option) => {
+    option.selected = false;
+  });
+  applyOutputFieldFilterFromUI();
 }
 
 function refreshOutputFieldOptions() {
@@ -439,6 +460,16 @@ async function handleConnectAll() {
 }
 
 async function handleRunMerge() {
+  const selectedSources = getSelectedSources();
+  const selectedOutputFieldsCount = selectedSources.reduce(
+    (total, source) => total + source.selectedFields.length,
+    0
+  );
+  if (selectedOutputFieldsCount === 0) {
+    hideMergeResults();
+    mergeSummary.textContent = "Select at least one output field before merging.";
+    return;
+  }
   runCrossMergeBtn.disabled = true;
   hideMergeResults();
   mergeSummary.textContent = "Merging selected data...";
@@ -448,7 +479,7 @@ async function handleRunMerge() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         environment: environmentSelect.value,
-        sources: getSelectedSources(),
+        sources: selectedSources,
         mappings: getMappings(),
         sourceFilters: getSourceFilters()
       })
@@ -487,4 +518,6 @@ outputFieldSearchInput.addEventListener("input", () => {
   applyOutputFieldFilterFromUI();
 });
 outputFieldFilterSelect.addEventListener("change", applyOutputFieldFilterFromUI);
+selectAllOutputFieldsBtn.addEventListener("click", selectAllVisibleOutputFields);
+clearOutputFieldsBtn.addEventListener("click", clearAllVisibleOutputFields);
 loadDatabaseOptions();
