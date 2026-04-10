@@ -1,0 +1,16 @@
+{
+  "name": "db-handle",
+  "version": "1.0.0",
+  "description": "Database connector demo for PostgreSQL, Cassandra, and MongoDB",
+  "main": "server.js",
+  "scripts": {
+    "start": "nodemon server.js"
+  },
+  "dependencies": {
+    "cassandra-driver": "^4.7.2",
+    "express": "^4.21.2",
+    "mongodb": "^6.17.0",
+    "nodemon": "^3.1.14",
+    "pg": "^8.13.3"
+  }
+}

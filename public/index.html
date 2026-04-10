@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multi-DB Connector</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <p class="eyebrow">Backend-driven connection demo</p>
+        <h1>Connect, inspect schema, and query data visually</h1>
+        <p class="subtitle">
+          Choose an environment and database, connect through the backend, then
+          explore tables or collections with a simple ORM-like query builder.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="form-grid">
+          <div>
+            <label for="environment" class="label">Environment</label>
+            <select id="environment" class="select"></select>
+          </div>
+          <div>
+            <label for="database" class="label">Database</label>
+            <select id="database" class="select"></select>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button id="connectBtn" class="button">Connect</button>
+        </div>
+        <pre id="result" class="result">Loading database options...</pre>
+      </section>
+
+      <section id="explorerPanel" class="panel hidden">
+        <div class="explorer-header">
+          <div>
+            <p class="eyebrow">Data Explorer</p>
+            <h2 class="section-title">ORM-like query builder</h2>
+          </div>
+          <button id="reloadEntitiesBtn" class="button secondary">Refresh Entities</button>
+        </div>
+
+        <div class="form-grid">
+          <div>
+            <label for="entity" class="label">Table / Collection</label>
+            <select id="entity" class="select"></select>
+          </div>
+          <div>
+            <label class="label">Available fields</label>
+            <div id="fieldList" class="field-list"></div>
+          </div>
+        </div>
+
+        <div class="builder">
+          <div class="builder-header">
+            <h3 class="builder-title">Filters</h3>
+            <button id="addFilterBtn" class="button secondary">Add Filter</button>
+          </div>
+          <div id="filters" class="filters"></div>
+        </div>
+
+        <div class="controls">
+          <button id="runQueryBtn" class="button">Run Query</button>
+        </div>
+
+        <div id="queryMeta" class="query-meta"></div>
+        <div id="tableWrapper" class="table-wrapper hidden"></div>
+        <pre id="queryJson" class="result hidden"></pre>
+
+        <div class="builder merge-builder">
+          <div class="builder-header">
+            <h3 class="builder-title">Merge By Common Key</h3>
+          </div>
+
+          <div class="form-grid">
+            <div>
+              <label for="mergeField" class="label">Common field</label>
+              <input id="mergeField" class="input" placeholder="user_id or username" />
+            </div>
+            <div>
+              <label for="mergeValue" class="label">Lookup value</label>
+              <input id="mergeValue" class="input" placeholder="Enter the user id or username" />
+            </div>
+          </div>
+
+          <label class="label">Choose tables / collections to merge</label>
+          <div id="mergeEntities" class="entity-picker"></div>
+
+          <div class="controls">
+            <button id="runMergeBtn" class="button">Merge Data</button>
+          </div>
+        </div>
+
+        <div id="mergeMeta" class="query-meta"></div>
+        <pre id="mergeJson" class="result hidden"></pre>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+  </html>
