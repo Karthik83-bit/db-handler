@@ -12,12 +12,19 @@ const port = process.env.PORT || 3000;
 const DEFAULT_ROW_LIMIT = 100;
 const DEFAULT_MONGO_SAMPLE_LIMIT = 25;
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const FIELD_PATH_PATTERN = /^[A-Za-z_][A-Za-z0-9_.]*$/;
 
 app.use(express.json());
 app.use(express.static("public"));
 
 function assertValidIdentifier(value, label) {
   if (!IDENTIFIER_PATTERN.test(value)) {
+    throw new Error(`Invalid ${label}.`);
+  }
+}
+
+function assertValidFieldPath(value, label) {
+  if (!FIELD_PATH_PATTERN.test(value)) {
     throw new Error(`Invalid ${label}.`);
   }
 }
@@ -43,6 +50,91 @@ function normalizeEntities(entities) {
   return entities
     .map((entity) => String(entity || "").trim())
     .filter(Boolean);
+}
+
+function getSourceKey(database, entity) {
+  return `${database}:${entity}`;
+}
+
+function parseSourceKey(sourceKey) {
+  const [database, ...entityParts] = String(sourceKey || "").split(":");
+  return {
+    database,
+    entity: entityParts.join(":")
+  };
+}
+
+function normalizeSelectedSources(sources) {
+  if (!Array.isArray(sources)) {
+    return [];
+  }
+
+  const uniqueSources = new Map();
+
+  sources.forEach((source) => {
+    const database = String(source?.database || "").trim();
+    const entity = String(source?.entity || "").trim();
+
+    if (!database || !entity) {
+      return;
+    }
+
+    uniqueSources.set(getSourceKey(database, entity), {
+      database,
+      entity
+    });
+  });
+
+  return Array.from(uniqueSources.values());
+}
+
+function normalizeMergeMappings(mappings) {
+  if (!Array.isArray(mappings)) {
+    return [];
+  }
+
+  return mappings
+    .map((mapping) => ({
+      leftDatabase: String(mapping?.leftDatabase || "").trim(),
+      leftEntity: String(mapping?.leftEntity || "").trim(),
+      leftField: String(mapping?.leftField || "").trim(),
+      rightDatabase: String(mapping?.rightDatabase || "").trim(),
+      rightEntity: String(mapping?.rightEntity || "").trim(),
+      rightField: String(mapping?.rightField || "").trim(),
+      castType: String(mapping?.castType || "auto").trim().toLowerCase()
+    }))
+    .filter(
+      (mapping) =>
+        mapping.leftDatabase &&
+        mapping.leftEntity &&
+        mapping.leftField &&
+        mapping.rightDatabase &&
+        mapping.rightEntity &&
+        mapping.rightField
+    );
+}
+
+function normalizeSourceFilters(filters) {
+  if (!Array.isArray(filters)) {
+    return [];
+  }
+
+  return filters
+    .map((filter) => ({
+      database: String(filter?.database || "").trim(),
+      entity: String(filter?.entity || "").trim(),
+      field: String(filter?.field || "").trim(),
+      value: filter?.value
+    }))
+    .filter(
+      (filter) =>
+        filter.database &&
+        filter.entity &&
+        filter.field &&
+        filter.value !== undefined &&
+        filter.value !== null &&
+        String(filter.value).trim() !== ""
+    );
 }
 
 function getDatabaseConfig(environment, database) {
@@ -172,6 +264,118 @@ function getSqlValue(rawValue) {
   }
 
   return trimmed;
+}
+
+function getNestedValue(record, path) {
+  if (!path.includes(".")) {
+    return record?.[path];
+  }
+
+  return path.split(".").reduce((current, segment) => {
+    if (current === null || current === undefined) {
+      return undefined;
+    }
+
+    return current[segment];
+  }, record);
+}
+
+function castValue(value, castType = "auto") {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalizedType = String(castType || "auto").toLowerCase();
+
+  if (normalizedType === "auto") {
+    if (typeof value === "number" || typeof value === "boolean") {
+      return value;
+    }
+
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+
+    if (typeof value === "object") {
+      if (typeof value.toHexString === "function") {
+        return value.toHexString();
+      }
+
+      if (typeof value.toString === "function") {
+        const stringValue = value.toString();
+        if (stringValue !== "[object Object]") {
+          return stringValue;
+        }
+      }
+
+      return JSON.stringify(value);
+    }
+
+    const raw = String(value).trim();
+
+    if (raw === "") {
+      return "";
+    }
+
+    if (raw === "true") {
+      return true;
+    }
+
+    if (raw === "false") {
+      return false;
+    }
+
+    if (!Number.isNaN(Number(raw)) && raw !== "") {
+      return Number(raw);
+    }
+
+    const dateValue = new Date(raw);
+    if (!Number.isNaN(dateValue.getTime()) && /[-/:T]/.test(raw)) {
+      return dateValue.toISOString();
+    }
+
+    return raw;
+  }
+
+  switch (normalizedType) {
+    case "string":
+      return String(value);
+    case "number": {
+      const parsed = Number(value);
+      return Number.isNaN(parsed) ? null : parsed;
+    }
+    case "boolean": {
+      if (typeof value === "boolean") {
+        return value;
+      }
+
+      const lowered = String(value).trim().toLowerCase();
+      if (["true", "1", "yes"].includes(lowered)) {
+        return true;
+      }
+      if (["false", "0", "no"].includes(lowered)) {
+        return false;
+      }
+      return null;
+    }
+    case "date": {
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    }
+    default:
+      return String(value);
+  }
+}
+
+function valuesMatch(leftValue, rightValue, castType) {
+  const leftCasted = castValue(leftValue, castType);
+  const rightCasted = castValue(rightValue, castType);
+
+  if (leftCasted === null || rightCasted === null) {
+    return false;
+  }
+
+  return leftCasted === rightCasted;
 }
 
 async function connectPostgres(config, environment) {
@@ -482,6 +686,233 @@ async function runEntityQuery(database, environment, entity, filters) {
   }
 }
 
+function validateMergeGraph(selectedSources, mappings) {
+  const sourceKeys = selectedSources.map((source) =>
+    getSourceKey(source.database, source.entity)
+  );
+
+  const knownSources = new Set(sourceKeys);
+  const adjacency = new Map(sourceKeys.map((sourceKey) => [sourceKey, new Set()]));
+
+  mappings.forEach((mapping) => {
+    const leftSourceKey = getSourceKey(mapping.leftDatabase, mapping.leftEntity);
+    const rightSourceKey = getSourceKey(mapping.rightDatabase, mapping.rightEntity);
+
+    if (!knownSources.has(leftSourceKey) || !knownSources.has(rightSourceKey)) {
+      throw new Error("Each mapping must point to a selected table or collection.");
+    }
+
+    assertValidFieldPath(mapping.leftField, "mapping field");
+    assertValidFieldPath(mapping.rightField, "mapping field");
+
+    adjacency.get(leftSourceKey).add(rightSourceKey);
+    adjacency.get(rightSourceKey).add(leftSourceKey);
+  });
+
+  const visited = new Set();
+  const queue = [sourceKeys[0]];
+
+  while (queue.length) {
+    const current = queue.shift();
+    if (visited.has(current)) {
+      continue;
+    }
+
+    visited.add(current);
+    adjacency.get(current).forEach((next) => {
+      if (!visited.has(next)) {
+        queue.push(next);
+      }
+    });
+  }
+
+  if (visited.size !== sourceKeys.length) {
+    throw new Error(
+      "Add mapping rules so every selected table or collection is connected."
+    );
+  }
+}
+
+function flattenMergedGroup(group, selectedSources) {
+  const flattened = {};
+
+  selectedSources.forEach((source) => {
+    const sourceKey = getSourceKey(source.database, source.entity);
+    const row = group[sourceKey];
+
+    if (!row) {
+      return;
+    }
+
+    Object.entries(row).forEach(([field, value]) => {
+      flattened[`${source.database}.${source.entity}.${field}`] = value;
+    });
+  });
+
+  return flattened;
+}
+
+function mergeAcrossSources(selectedSources, rowsBySource, mappings) {
+  const sourceKeys = selectedSources.map((source) =>
+    getSourceKey(source.database, source.entity)
+  );
+  const [baseSourceKey] = sourceKeys;
+  let mergedGroups = (rowsBySource[baseSourceKey] || []).map((row) => ({
+    [baseSourceKey]: row
+  }));
+  const resolvedSources = new Set([baseSourceKey]);
+  const pendingSources = new Set(sourceKeys.slice(1));
+
+  while (pendingSources.size > 0) {
+    let progressed = false;
+
+    for (const pendingSourceKey of Array.from(pendingSources)) {
+      const relatedMappings = mappings.filter((mapping) => {
+        const leftSourceKey = getSourceKey(mapping.leftDatabase, mapping.leftEntity);
+        const rightSourceKey = getSourceKey(mapping.rightDatabase, mapping.rightEntity);
+
+        return (
+          (leftSourceKey === pendingSourceKey && resolvedSources.has(rightSourceKey)) ||
+          (rightSourceKey === pendingSourceKey && resolvedSources.has(leftSourceKey))
+        );
+      });
+
+      if (!relatedMappings.length) {
+        continue;
+      }
+
+      const sourceRows = rowsBySource[pendingSourceKey] || [];
+      const nextGroups = [];
+
+      mergedGroups.forEach((group) => {
+        const matches = sourceRows.filter((sourceRow) =>
+          relatedMappings.every((mapping) => {
+            const leftSourceKey = getSourceKey(mapping.leftDatabase, mapping.leftEntity);
+            const rightSourceKey = getSourceKey(mapping.rightDatabase, mapping.rightEntity);
+            const leftRow =
+              leftSourceKey === pendingSourceKey
+                ? sourceRow
+                : group[leftSourceKey];
+            const rightRow =
+              rightSourceKey === pendingSourceKey
+                ? sourceRow
+                : group[rightSourceKey];
+
+            if (!leftRow || !rightRow) {
+              return false;
+            }
+
+            return valuesMatch(
+              getNestedValue(leftRow, mapping.leftField),
+              getNestedValue(rightRow, mapping.rightField),
+              mapping.castType
+            );
+          })
+        );
+
+        if (matches.length === 0) {
+          nextGroups.push({
+            ...group,
+            [pendingSourceKey]: null
+          });
+          return;
+        }
+
+        matches.forEach((match) => {
+          nextGroups.push({
+            ...group,
+            [pendingSourceKey]: match
+          });
+        });
+      });
+
+      mergedGroups = nextGroups;
+      resolvedSources.add(pendingSourceKey);
+      pendingSources.delete(pendingSourceKey);
+      progressed = true;
+    }
+
+    if (!progressed) {
+      throw new Error(
+        "Could not build the merge order from the selected mapping rules."
+      );
+    }
+  }
+
+  return mergedGroups.map((group) => flattenMergedGroup(group, selectedSources));
+}
+
+async function mergeSelectedSources(environment, sources, mappings, sourceFilters) {
+  const selectedSources = normalizeSelectedSources(sources);
+  const normalizedMappings = normalizeMergeMappings(mappings);
+  const normalizedSourceFilters = normalizeSourceFilters(sourceFilters);
+
+  if (selectedSources.length < 2) {
+    throw new Error("Choose at least two tables or collections to merge.");
+  }
+
+  if (!normalizedMappings.length) {
+    throw new Error("Add at least one field mapping before merging.");
+  }
+
+  validateMergeGraph(selectedSources, normalizedMappings);
+
+  const rowsBySourceEntries = await Promise.all(
+    selectedSources.map(async (source) => {
+      const filtersForSource = normalizedSourceFilters
+        .filter(
+          (filter) =>
+            filter.database === source.database && filter.entity === source.entity
+        )
+        .map((filter) => {
+          assertValidFieldPath(filter.field, "filter field");
+
+          return {
+            field: filter.field,
+            value: filter.value
+          };
+        });
+
+      const result = await runEntityQuery(
+        source.database,
+        environment,
+        source.entity,
+        filtersForSource
+      );
+
+      return [
+        getSourceKey(source.database, source.entity),
+        {
+          database: source.database,
+          entity: source.entity,
+          columns: result.columns,
+          rows: result.rows
+        }
+      ];
+    })
+  );
+
+  const rowsBySource = Object.fromEntries(rowsBySourceEntries);
+  const mergedRows = mergeAcrossSources(
+    selectedSources,
+    Object.fromEntries(
+      Object.entries(rowsBySource).map(([sourceKey, value]) => [sourceKey, value.rows])
+    ),
+    normalizedMappings
+  );
+
+  return {
+    sources: selectedSources,
+    mappings: normalizedMappings,
+    sourceFilters: normalizedSourceFilters,
+    mergedRows,
+    mergedColumns: Array.from(
+      new Set(mergedRows.flatMap((row) => Object.keys(row)))
+    ),
+    rowsBySource
+  };
+}
+
 function mergeRowsByEntity(rowsByEntity) {
   const merged = {};
 
@@ -691,6 +1122,39 @@ app.post("/api/merge", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Merge failed.",
+      error: error.message
+    });
+  }
+});
+
+app.post("/api/cross-merge", async (req, res) => {
+  const { environment, sources, mappings, sourceFilters } = req.body;
+
+  if (!environment) {
+    return res.status(400).json({
+      success: false,
+      message: "Please provide an environment."
+    });
+  }
+
+  try {
+    const result = await mergeSelectedSources(
+      environment,
+      sources,
+      mappings,
+      sourceFilters
+    );
+
+    return res.json({
+      success: true,
+      environment,
+      ...result,
+      mergedCount: result.mergedRows.length
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Cross-database merge failed.",
       error: error.message
     });
   }

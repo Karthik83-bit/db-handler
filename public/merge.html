@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cross-DB Merge Studio</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <nav class="page-nav">
+        <a class="nav-link" href="./index.html">Query Explorer</a>
+        <a class="nav-link active" href="./merge.html">Cross-DB Merge</a>
+      </nav>
+
+      <section class="hero">
+        <p class="eyebrow">Cross-database mapping studio</p>
+        <h1>Merge rows across PostgreSQL, MongoDB, and Cassandra</h1>
+        <p class="subtitle">
+          Connect every database, choose one table or collection from each, map
+          foreign-key-like fields, and merge records with explicit type casting.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="explorer-header">
+          <div>
+            <p class="eyebrow">Step 1</p>
+            <h2 class="section-title">Connect all databases</h2>
+          </div>
+        </div>
+
+        <div class="form-grid">
+          <div>
+            <label for="mergeEnvironment" class="label">Environment</label>
+            <select id="mergeEnvironment" class="select"></select>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button id="connectAllBtn" class="button">Connect All</button>
+        </div>
+
+        <div class="database-grid">
+          <article class="db-card" data-database="postgres">
+            <div class="db-card-header">
+              <h3>PostgreSQL</h3>
+              <span id="status-postgres" class="status-pill">Not connected</span>
+            </div>
+            <label class="label" for="entity-postgres">Table</label>
+            <select id="entity-postgres" class="select" disabled></select>
+            <label class="label">Fields</label>
+            <div id="fields-postgres" class="field-list compact"></div>
+          </article>
+
+          <article class="db-card" data-database="mongodb">
+            <div class="db-card-header">
+              <h3>MongoDB</h3>
+              <span id="status-mongodb" class="status-pill">Not connected</span>
+            </div>
+            <label class="label" for="entity-mongodb">Collection</label>
+            <select id="entity-mongodb" class="select" disabled></select>
+            <label class="label">Fields</label>
+            <div id="fields-mongodb" class="field-list compact"></div>
+          </article>
+
+          <article class="db-card" data-database="cassandra">
+            <div class="db-card-header">
+              <h3>Cassandra</h3>
+              <span id="status-cassandra" class="status-pill">Not connected</span>
+            </div>
+            <label class="label" for="entity-cassandra">Table</label>
+            <select id="entity-cassandra" class="select" disabled></select>
+            <label class="label">Fields</label>
+            <div id="fields-cassandra" class="field-list compact"></div>
+          </article>
+        </div>
+
+        <pre id="connectResult" class="result">Choose an environment, then connect all databases.</pre>
+      </section>
+
+      <section class="panel">
+        <div class="explorer-header">
+          <div>
+            <p class="eyebrow">Step 2</p>
+            <h2 class="section-title">Choose the starting record</h2>
+          </div>
+        </div>
+
+        <div class="seed-filter-card">
+          <div class="form-grid seed-grid">
+            <div>
+              <label for="seedSource" class="label">First table / collection</label>
+              <select id="seedSource" class="select"></select>
+            </div>
+            <div>
+              <label for="seedField" class="label">Lookup field</label>
+              <select id="seedField" class="select"></select>
+            </div>
+          </div>
+
+          <div class="form-grid seed-grid">
+            <div>
+              <label for="seedValue" class="label">Lookup value</label>
+              <input
+                id="seedValue"
+                class="input"
+                placeholder="username, email, phone, customer code..."
+              />
+            </div>
+            <div class="seed-help">
+              <p class="eyebrow">How It Works</p>
+              <p>
+                Example: choose `postgres:users`, field `username`, value
+                `john`, then map `users.id` to matching keys in Cassandra and
+                MongoDB.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="explorer-header">
+          <div>
+            <p class="eyebrow">Step 3</p>
+            <h2 class="section-title">Create field mappings</h2>
+          </div>
+          <button id="addMappingBtn" class="button secondary">Add Mapping</button>
+        </div>
+
+        <div id="mappingRows" class="mapping-list"></div>
+
+        <div class="controls">
+          <button id="runCrossMergeBtn" class="button">Show Merged Data</button>
+        </div>
+
+        <div id="mergeSummary" class="query-meta"></div>
+        <div id="sourceSummary" class="summary-grid"></div>
+        <div id="mergedTableWrapper" class="table-wrapper hidden"></div>
+        <pre id="mergedJson" class="result hidden"></pre>
+      </section>
+    </main>
+
+    <script src="./merge.js"></script>
+  </body>
+</html>

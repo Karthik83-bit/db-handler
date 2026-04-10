@@ -116,7 +116,7 @@ function renderFieldList(fields) {
   fields.forEach((field) => {
     const chip = document.createElement("span");
     chip.className = "field-chip";
-    chip.textContent = `${field.name} · ${field.type}`;
+    chip.textContent = `${field.name} - ${field.type}`;
     fieldList.appendChild(chip);
   });
 }

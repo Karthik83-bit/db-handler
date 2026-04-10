@@ -8,6 +8,11 @@
   </head>
   <body>
     <main class="app-shell">
+      <nav class="page-nav">
+        <a class="nav-link active" href="./index.html">Query Explorer</a>
+        <a class="nav-link" href="./merge.html">Cross-DB Merge</a>
+      </nav>
+
       <section class="hero">
         <p class="eyebrow">Backend-driven connection demo</p>
         <h1>Connect, inspect schema, and query data visually</h1>
@@ -70,33 +75,6 @@
         <div id="queryMeta" class="query-meta"></div>
         <div id="tableWrapper" class="table-wrapper hidden"></div>
         <pre id="queryJson" class="result hidden"></pre>
-
-        <div class="builder merge-builder">
-          <div class="builder-header">
-            <h3 class="builder-title">Merge By Common Key</h3>
-          </div>
-
-          <div class="form-grid">
-            <div>
-              <label for="mergeField" class="label">Common field</label>
-              <input id="mergeField" class="input" placeholder="user_id or username" />
-            </div>
-            <div>
-              <label for="mergeValue" class="label">Lookup value</label>
-              <input id="mergeValue" class="input" placeholder="Enter the user id or username" />
-            </div>
-          </div>
-
-          <label class="label">Choose tables / collections to merge</label>
-          <div id="mergeEntities" class="entity-picker"></div>
-
-          <div class="controls">
-            <button id="runMergeBtn" class="button">Merge Data</button>
-          </div>
-        </div>
-
-        <div id="mergeMeta" class="query-meta"></div>
-        <pre id="mergeJson" class="result hidden"></pre>
       </section>
     </main>
 
