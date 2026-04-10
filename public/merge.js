@@ -10,21 +10,22 @@ const addMappingBtn = document.getElementById("addMappingBtn");
 const mappingRows = document.getElementById("mappingRows");
 const runCrossMergeBtn = document.getElementById("runCrossMergeBtn");
 const mergeSummary = document.getElementById("mergeSummary");
-const outputFilterCard = document.getElementById("outputFilterCard");
+const outputFieldDropdownBtn = document.getElementById("outputFieldDropdownBtn");
+const outputFieldDropdownPanel = document.getElementById("outputFieldDropdownPanel");
 const outputFieldSearchInput = document.getElementById("outputFieldSearch");
-const outputFieldFilterSelect = document.getElementById("outputFieldFilter");
+const outputFieldCheckboxes = document.getElementById("outputFieldCheckboxes");
 const selectAllOutputFieldsBtn = document.getElementById("selectAllOutputFieldsBtn");
 const clearOutputFieldsBtn = document.getElementById("clearOutputFieldsBtn");
 const sourceSummary = document.getElementById("sourceSummary");
 const mergedTableWrapper = document.getElementById("mergedTableWrapper");
 const mergedJson = document.getElementById("mergedJson");
+
 const state = {
   entitiesByDatabase: {},
   fieldsBySource: {},
   connectedDatabases: new Set(),
   sourceCounter: 0,
-  lastMergeData: null,
-  mergedColumns: []
+  selectedOutputFieldIds: new Set()
 };
 
 function renderJsonResult(element, payload) {
@@ -34,16 +35,11 @@ function renderJsonResult(element, payload) {
 
 function hideMergeResults() {
   mergeSummary.textContent = "";
-  outputFilterCard.classList.add("hidden");
-  outputFieldSearchInput.value = "";
-  outputFieldFilterSelect.innerHTML = "";
   sourceSummary.innerHTML = "";
   mergedTableWrapper.classList.add("hidden");
   mergedTableWrapper.innerHTML = "";
   mergedJson.classList.add("hidden");
   mergedJson.textContent = "";
-  state.lastMergeData = null;
-  state.mergedColumns = [];
 }
 
 async function fetchJson(url, options) {
@@ -96,8 +92,7 @@ function getSelectedSources() {
   return getSelectedSourceCards().map((card) => ({
     sourceId: card.dataset.sourceId,
     database: card.dataset.database,
-    entity: card.querySelector('[data-role="entity"]').value,
-    selectedFields: Array.from(card.querySelector('[data-role="selected-fields"]').selectedOptions).map((option) => option.value)
+    entity: card.querySelector('[data-role="entity"]').value
   }));
 }
 
@@ -123,17 +118,78 @@ function renderAvailableFieldOptions(selectElement, fields) {
   });
 }
 
-function renderSelectedFieldOptions(select, fields) {
-  const previous = new Set(Array.from(select.selectedOptions).map((option) => option.value));
-  select.innerHTML = "";
-  select.disabled = !fields.length;
-  fields.forEach((field) => {
-    const option = document.createElement("option");
-    option.value = field.name;
-    option.textContent = `${field.name} (${field.type})`;
-    option.selected = previous.has(field.name);
-    select.appendChild(option);
+function updateOutputFieldDropdownLabel() {
+  const count = state.selectedOutputFieldIds.size;
+  outputFieldDropdownBtn.textContent = count > 0 ? `Output fields selected: ${count}` : "Select output fields";
+}
+
+function getAllOutputFieldEntries() {
+  return getSelectedSources().flatMap((source) => {
+    const sourceKey = getSourceKey(source.database, source.entity, source.sourceId);
+    const fields = getSourceFields(sourceKey);
+    return fields.map((field) => ({
+      id: `${source.sourceId}::${field.name}`,
+      sourceId: source.sourceId,
+      database: source.database,
+      entity: source.entity,
+      field: field.name,
+      label: `${source.database.toUpperCase()} / ${source.entity} / ${field.name}`
+    }));
   });
+}
+
+function refreshOutputFieldSelector() {
+  const term = outputFieldSearchInput.value.trim().toLowerCase();
+  const entries = getAllOutputFieldEntries();
+  const knownIds = new Set(entries.map((entry) => entry.id));
+  state.selectedOutputFieldIds = new Set(
+    Array.from(state.selectedOutputFieldIds).filter((id) => knownIds.has(id))
+  );
+
+  outputFieldCheckboxes.innerHTML = "";
+  const visible = entries.filter((entry) => !term || entry.label.toLowerCase().includes(term));
+  if (!visible.length) {
+    outputFieldCheckboxes.innerHTML = '<p class="muted-note">No fields match your search.</p>';
+    updateOutputFieldDropdownLabel();
+    return;
+  }
+
+  visible.forEach((entry) => {
+    const label = document.createElement("label");
+    label.className = "checkbox-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = entry.id;
+    checkbox.checked = state.selectedOutputFieldIds.has(entry.id);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) state.selectedOutputFieldIds.add(entry.id);
+      else state.selectedOutputFieldIds.delete(entry.id);
+      updateOutputFieldDropdownLabel();
+      hideMergeResults();
+    });
+    const text = document.createElement("span");
+    text.textContent = entry.label;
+    label.appendChild(checkbox);
+    label.appendChild(text);
+    outputFieldCheckboxes.appendChild(label);
+  });
+
+  updateOutputFieldDropdownLabel();
+}
+
+function getSourcesWithSelectedOutputFields() {
+  const fieldMapBySource = {};
+  Array.from(state.selectedOutputFieldIds).forEach((itemId) => {
+    const [sourceId, field] = itemId.split("::");
+    if (!sourceId || !field) return;
+    if (!fieldMapBySource[sourceId]) fieldMapBySource[sourceId] = [];
+    fieldMapBySource[sourceId].push(field);
+  });
+
+  return getSelectedSources().map((source) => ({
+    ...source,
+    selectedFields: fieldMapBySource[source.sourceId] || []
+  }));
 }
 
 function updateStatus(database, text, tone = "idle") {
@@ -193,7 +249,6 @@ function refreshSeedSourceOptions() {
 
 function clearSourceCard(card) {
   renderAvailableFieldOptions(card.querySelector('[data-role="available-fields"]'), []);
-  renderSelectedFieldOptions(card.querySelector('[data-role="selected-fields"]'), []);
 }
 
 async function loadFieldsForCard(card) {
@@ -202,6 +257,7 @@ async function loadFieldsForCard(card) {
     clearSourceCard(card);
     refreshMappingRowSources();
     refreshSeedSourceOptions();
+    refreshOutputFieldSelector();
     return;
   }
   const database = card.dataset.database;
@@ -209,9 +265,9 @@ async function loadFieldsForCard(card) {
   const data = await fetchJson(`/api/entity-fields?environment=${encodeURIComponent(environmentSelect.value)}&database=${encodeURIComponent(database)}&entity=${encodeURIComponent(entity)}`);
   state.fieldsBySource[getSourceKey(database, entity, sourceId)] = data.fields;
   renderAvailableFieldOptions(card.querySelector('[data-role="available-fields"]'), data.fields);
-  renderSelectedFieldOptions(card.querySelector('[data-role="selected-fields"]'), data.fields);
   refreshMappingRowSources();
   refreshSeedSourceOptions();
+  refreshOutputFieldSelector();
 }
 
 function createSourceCard(database) {
@@ -230,15 +286,12 @@ function createSourceCard(database) {
     <select class="select" data-role="entity"></select>
     <label class="label">Available fields</label>
     <select class="select" data-role="available-fields" disabled></select>
-    <label class="label">Output fields</label>
-    <select class="select multi-select" data-role="selected-fields" multiple disabled></select>
   `;
   populateSelect(card.querySelector('[data-role="entity"]'), state.entitiesByDatabase[database] || [], `Choose a ${database === "mongodb" ? "collection" : "table"}`);
   card.querySelector('[data-role="entity"]').addEventListener("change", async () => {
     hideMergeResults();
     await loadFieldsForCard(card);
   });
-  card.querySelector('[data-role="selected-fields"]').addEventListener("change", hideMergeResults);
   card.querySelector('[data-role="remove-source"]').addEventListener("click", () => {
     const entityValue = card.querySelector('[data-role="entity"]').value;
     if (entityValue) {
@@ -247,6 +300,7 @@ function createSourceCard(database) {
     card.remove();
     refreshMappingRowSources();
     refreshSeedSourceOptions();
+    refreshOutputFieldSelector();
     hideMergeResults();
   });
   clearSourceCard(card);
@@ -318,79 +372,46 @@ function getSourceFilters() {
   return [{ sourceId, database, entity, field: seedFieldSelect.value, value }];
 }
 
-function getVisibleMergedColumns() {
-  const selected = Array.from(outputFieldFilterSelect.selectedOptions).map((option) => option.value);
-  return selected.length ? selected : state.mergedColumns;
-}
-
-function applyOutputFieldFilterFromUI() {
-  if (!state.lastMergeData) return;
-  const visibleColumns = getVisibleMergedColumns();
-  const filteredRows = state.lastMergeData.mergedRows.map((row) => {
-    const filteredRow = {};
-    visibleColumns.forEach((column) => {
-      if (Object.prototype.hasOwnProperty.call(row, column)) {
-        filteredRow[column] = row[column];
-      }
-    });
-    return filteredRow;
-  });
-  renderTable(visibleColumns, filteredRows);
-}
-
-function selectAllVisibleOutputFields() {
-  Array.from(outputFieldFilterSelect.options).forEach((option) => {
-    option.selected = true;
-  });
-  applyOutputFieldFilterFromUI();
-}
-
-function clearAllVisibleOutputFields() {
-  Array.from(outputFieldFilterSelect.options).forEach((option) => {
-    option.selected = false;
-  });
-  applyOutputFieldFilterFromUI();
-}
-
-function refreshOutputFieldOptions() {
-  if (!state.lastMergeData) return;
-  const term = outputFieldSearchInput.value.trim().toLowerCase();
-  const selectedBefore = new Set(Array.from(outputFieldFilterSelect.selectedOptions).map((option) => option.value));
-  outputFieldFilterSelect.innerHTML = "";
-  state.mergedColumns
-    .filter((column) => !term || column.toLowerCase().includes(term))
-    .forEach((column) => {
-      const option = document.createElement("option");
-      option.value = column;
-      option.textContent = column;
-      option.selected = selectedBefore.size === 0 || selectedBefore.has(column);
-      outputFieldFilterSelect.appendChild(option);
-    });
-}
-
-function renderTable(columns, rows) {
+function renderMergedRows(rows) {
   if (!rows.length) {
     mergedTableWrapper.classList.add("hidden");
     mergedTableWrapper.innerHTML = "";
     return;
   }
-  const table = document.createElement("table");
-  table.className = "data-table";
-  table.innerHTML = `<thead><tr>${columns.map((column) => `<th>${column}</th>`).join("")}</tr></thead>`;
-  const tbody = document.createElement("tbody");
-  rows.forEach((row) => {
-    const tr = document.createElement("tr");
-    columns.forEach((column) => {
-      const td = document.createElement("td");
-      const value = row[column];
-      td.textContent = value && typeof value === "object" ? JSON.stringify(value) : value ?? "";
-      tr.appendChild(td);
+
+  const list = document.createElement("div");
+  list.className = "merged-row-list";
+
+  rows.forEach((row, index) => {
+    const card = document.createElement("article");
+    card.className = "merged-row-card";
+    const header = document.createElement("h4");
+    header.textContent = `Merged Row ${index + 1}`;
+    card.appendChild(header);
+
+    const fields = document.createElement("div");
+    fields.className = "merged-row-fields";
+    Object.entries(row).forEach(([key, value]) => {
+      const item = document.createElement("div");
+      item.className = "merged-field-item";
+      const label = document.createElement("span");
+      label.className = "merged-field-key";
+      label.textContent = key;
+      const content = document.createElement("span");
+      content.className = "merged-field-value";
+      content.textContent =
+        value && typeof value === "object" ? JSON.stringify(value) : String(value ?? "");
+      item.appendChild(label);
+      item.appendChild(content);
+      fields.appendChild(item);
     });
-    tbody.appendChild(tr);
+
+    card.appendChild(fields);
+    list.appendChild(card);
   });
-  table.appendChild(tbody);
+
   mergedTableWrapper.innerHTML = "";
-  mergedTableWrapper.appendChild(table);
+  mergedTableWrapper.appendChild(list);
   mergedTableWrapper.classList.remove("hidden");
 }
 
@@ -453,6 +474,7 @@ async function handleConnectAll() {
     }));
     refreshMappingRowSources();
     refreshSeedSourceOptions();
+    refreshOutputFieldSelector();
     connectResult.textContent = JSON.stringify(statuses, null, 2);
   } finally {
     connectAllBtn.disabled = false;
@@ -460,7 +482,7 @@ async function handleConnectAll() {
 }
 
 async function handleRunMerge() {
-  const selectedSources = getSelectedSources();
+  const selectedSources = getSourcesWithSelectedOutputFields();
   const selectedOutputFieldsCount = selectedSources.reduce(
     (total, source) => total + source.selectedFields.length,
     0
@@ -470,6 +492,7 @@ async function handleRunMerge() {
     mergeSummary.textContent = "Select at least one output field before merging.";
     return;
   }
+
   runCrossMergeBtn.disabled = true;
   hideMergeResults();
   mergeSummary.textContent = "Merging selected data...";
@@ -484,13 +507,9 @@ async function handleRunMerge() {
         sourceFilters: getSourceFilters()
       })
     });
-    state.lastMergeData = data;
-    state.mergedColumns = data.mergedColumns || [];
     mergeSummary.textContent = `${data.mergedCount} merged row(s) built from ${data.sources.length} selected data sources.`;
-    outputFilterCard.classList.remove("hidden");
-    refreshOutputFieldOptions();
-    applyOutputFieldFilterFromUI();
     renderSourceSummary(data.rowsBySource);
+    renderMergedRows(data.mergedRows);
     renderJsonResult(mergedJson, data);
   } catch (error) {
     mergeSummary.textContent = "Merge failed.";
@@ -500,11 +519,40 @@ async function handleRunMerge() {
   }
 }
 
+function toggleOutputFieldDropdown() {
+  outputFieldDropdownPanel.classList.toggle("hidden");
+}
+
+function handleClickOutsideOutputDropdown(event) {
+  if (!event.target.closest("#outputFieldDropdown")) {
+    outputFieldDropdownPanel.classList.add("hidden");
+  }
+}
+
+function selectAllVisibleOutputFields() {
+  Array.from(outputFieldCheckboxes.querySelectorAll('input[type="checkbox"]')).forEach((checkbox) => {
+    checkbox.checked = true;
+    state.selectedOutputFieldIds.add(checkbox.value);
+  });
+  updateOutputFieldDropdownLabel();
+  hideMergeResults();
+}
+
+function clearAllVisibleOutputFields() {
+  Array.from(outputFieldCheckboxes.querySelectorAll('input[type="checkbox"]')).forEach((checkbox) => {
+    checkbox.checked = false;
+    state.selectedOutputFieldIds.delete(checkbox.value);
+  });
+  updateOutputFieldDropdownLabel();
+  hideMergeResults();
+}
+
 DATABASES.forEach((database) => {
   getAddSourceButton(database).addEventListener("click", () => {
     getSourceContainer(database).appendChild(createSourceCard(database));
     refreshMappingRowSources();
     refreshSeedSourceOptions();
+    refreshOutputFieldSelector();
     hideMergeResults();
   });
 });
@@ -513,11 +561,10 @@ connectAllBtn.addEventListener("click", handleConnectAll);
 addMappingBtn.addEventListener("click", createMappingRow);
 runCrossMergeBtn.addEventListener("click", handleRunMerge);
 seedSourceSelect.addEventListener("change", refreshSeedFieldOptions);
-outputFieldSearchInput.addEventListener("input", () => {
-  refreshOutputFieldOptions();
-  applyOutputFieldFilterFromUI();
-});
-outputFieldFilterSelect.addEventListener("change", applyOutputFieldFilterFromUI);
+outputFieldDropdownBtn.addEventListener("click", toggleOutputFieldDropdown);
+outputFieldSearchInput.addEventListener("input", refreshOutputFieldSelector);
 selectAllOutputFieldsBtn.addEventListener("click", selectAllVisibleOutputFields);
 clearOutputFieldsBtn.addEventListener("click", clearAllVisibleOutputFields);
+document.addEventListener("click", handleClickOutsideOutputDropdown);
+updateOutputFieldDropdownLabel();
 loadDatabaseOptions();

@@ -239,11 +239,10 @@ h1 {
 
 .table-wrapper {
   margin-top: 16px;
-  overflow-x: auto;
-  overflow-y: auto;
+  overflow: visible;
   border-radius: 18px;
-  border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.7);
+  border: none;
+  background: transparent;
 }
 
 .data-table {
@@ -258,7 +257,7 @@ h1 {
   border-bottom: 1px solid rgba(29, 36, 51, 0.08);
   text-align: left;
   vertical-align: top;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .data-table th {
@@ -369,6 +368,96 @@ h1 {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1fr) 140px auto;
   gap: 12px;
+}
+
+.output-fields-card {
+  margin-top: 16px;
+}
+
+.output-dropdown {
+  position: relative;
+}
+
+.output-dropdown-btn {
+  width: 100%;
+}
+
+.output-dropdown-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.output-checkbox-list {
+  margin-top: 12px;
+  max-height: 260px;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.95rem;
+}
+
+.muted-note {
+  margin: 0;
+  color: var(--muted);
+}
+
+.merged-row-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.merged-row-card {
+  flex: 1 1 360px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.merged-row-card h4 {
+  margin: 0 0 12px;
+}
+
+.merged-row-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.merged-field-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(191, 90, 54, 0.08);
+  min-width: 180px;
+  max-width: 100%;
+}
+
+.merged-field-key {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.merged-field-value {
+  overflow-wrap: anywhere;
 }
 
 .seed-filter-card {

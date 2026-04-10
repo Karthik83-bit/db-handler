@@ -153,29 +153,18 @@
 
         <div id="mappingRows" class="mapping-list"></div>
 
-        <div class="controls">
-          <button id="runCrossMergeBtn" class="button">Show Merged Data</button>
-        </div>
-
-        <div id="mergeSummary" class="query-meta"></div>
-        <div id="outputFilterCard" class="seed-filter-card hidden">
-          <div class="explorer-header">
-            <div>
-              <p class="eyebrow">Step 4</p>
-              <h2 class="section-title">Filter output fields</h2>
-            </div>
-          </div>
-          <div class="form-grid seed-grid">
-            <div>
-              <label for="outputFieldSearch" class="label">Search output fields</label>
+        <div class="seed-filter-card output-fields-card">
+          <label class="label">Output fields</label>
+          <div class="output-dropdown" id="outputFieldDropdown">
+            <button id="outputFieldDropdownBtn" class="button secondary output-dropdown-btn" type="button">
+              Select output fields
+            </button>
+            <div id="outputFieldDropdownPanel" class="output-dropdown-panel hidden">
               <input
                 id="outputFieldSearch"
                 class="input"
-                placeholder="type a field name..."
+                placeholder="search fields..."
               />
-            </div>
-            <div>
-              <label for="outputFieldFilter" class="label">Visible output fields</label>
               <div class="controls compact-controls">
                 <button id="selectAllOutputFieldsBtn" class="button secondary" type="button">
                   Select All
@@ -184,10 +173,16 @@
                   Clear All
                 </button>
               </div>
-              <select id="outputFieldFilter" class="select multi-select" multiple></select>
+              <div id="outputFieldCheckboxes" class="output-checkbox-list"></div>
             </div>
           </div>
         </div>
+
+        <div class="controls">
+          <button id="runCrossMergeBtn" class="button">Show Merged Data</button>
+        </div>
+
+        <div id="mergeSummary" class="query-meta"></div>
         <div id="sourceSummary" class="summary-grid"></div>
         <div id="mergedTableWrapper" class="table-wrapper hidden"></div>
         <pre id="mergedJson" class="result hidden"></pre>
