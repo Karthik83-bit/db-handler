@@ -655,13 +655,17 @@ async function queryCassandra(config, entity, filters) {
 
   return withCassandraClient(config, async (client) => {
     const values = filters.map((filter) => getSqlValue(filter.value));
+    // CQL requires LIMIT before ALLOW FILTERING (not the reverse).
     const whereClause =
       filters.length > 0
         ? ` WHERE ${filters
             .map((filter) => `${filter.field} = ?`)
-            .join(" AND ")} ALLOW FILTERING`
+            .join(" AND ")} LIMIT ${DEFAULT_ROW_LIMIT} ALLOW FILTERING`
         : "";
-    const query = `SELECT * FROM ${entity}${whereClause} LIMIT ${DEFAULT_ROW_LIMIT}`;
+    const query =
+      filters.length > 0
+        ? `SELECT * FROM ${entity}${whereClause}`
+        : `SELECT * FROM ${entity} LIMIT ${DEFAULT_ROW_LIMIT}`;
     const result = await client.execute(query, values, {
       prepare: filters.length > 0
     });
@@ -777,6 +781,95 @@ function validateMergeGraph(selectedSources, mappings) {
       "Add mapping rules so every selected table or collection is connected."
     );
   }
+}
+
+/**
+ * When a lookup filter is used, keep the base (lookup) rows fixed and repeatedly
+ * narrow every other source using mapping edges.
+ *
+ * For each mapping (left source.field A ↔ right source.field B), a row on the
+ * right is kept only if there exists some row on the left such that those two
+ * column values match under `valuesMatch` (including `castType`). Same in the
+ * other direction when the left side is not the lookup base. No other columns
+ * are used for this filter — only the pair of fields chosen in that mapping row.
+ */
+function narrowRowsByLookupJoins(
+  selectedSources,
+  rowsBySource,
+  mappings,
+  baseSourceKey
+) {
+  const sourceKeys = selectedSources.map((source) =>
+    getSourceKey(source.database, source.entity, source.sourceId)
+  );
+  const bucket = {};
+  sourceKeys.forEach((sk) => {
+    bucket[sk] = [...(rowsBySource[sk]?.rows || [])];
+  });
+
+  const baseRows = [...(rowsBySource[baseSourceKey]?.rows || [])];
+  bucket[baseSourceKey] = baseRows;
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+
+    mappings.forEach((mapping) => {
+      const leftSourceKey = resolveSourceKey(
+        selectedSources,
+        mapping.leftDatabase,
+        mapping.leftEntity,
+        mapping.leftSourceId
+      );
+      const rightSourceKey = resolveSourceKey(
+        selectedSources,
+        mapping.rightDatabase,
+        mapping.rightEntity,
+        mapping.rightSourceId
+      );
+
+      if (rightSourceKey !== baseSourceKey) {
+        const newRight = bucket[rightSourceKey].filter((rRow) =>
+          bucket[leftSourceKey].some((lRow) =>
+            valuesMatch(
+              getNestedValue(lRow, mapping.leftField),
+              getNestedValue(rRow, mapping.rightField),
+              mapping.castType
+            )
+          )
+        );
+        if (newRight.length !== bucket[rightSourceKey].length) {
+          bucket[rightSourceKey] = newRight;
+          changed = true;
+        }
+      }
+
+      if (leftSourceKey !== baseSourceKey) {
+        const newLeft = bucket[leftSourceKey].filter((lRow) =>
+          bucket[rightSourceKey].some((rRow) =>
+            valuesMatch(
+              getNestedValue(lRow, mapping.leftField),
+              getNestedValue(rRow, mapping.rightField),
+              mapping.castType
+            )
+          )
+        );
+        if (newLeft.length !== bucket[leftSourceKey].length) {
+          bucket[leftSourceKey] = newLeft;
+          changed = true;
+        }
+      }
+    });
+  }
+
+  const next = {};
+  sourceKeys.forEach((sk) => {
+    next[sk] = {
+      ...rowsBySource[sk],
+      rows: bucket[sk]
+    };
+  });
+  return next;
 }
 
 function flattenMergedGroup(group, selectedSources) {
@@ -1142,8 +1235,10 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
     };
   }
 
-  // Follow mappings in user-provided order and query the not-yet-fetched side
-  // using values coming from the already-fetched side.
+  // Chain queries after lookup: whichever side already has rows (starts as the lookup
+  // source only — e.g. table A after "WHERE name = karthik") supplies values from its
+  // mapped field (e.g. A.id). We query the other side (table B) with WHERE B.<mapped_field> = each value.
+  // Mapping UI can list A left or A right; both directions are handled below.
   for (const mapping of normalizedMappings) {
     const leftSourceKey = resolveSourceKey(
       orderedSelectedSources,
@@ -1172,7 +1267,8 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
         from: `${leftSourceKey}.${mapping.leftField}`,
         to: `${rightSourceKey}.${mapping.rightField}`,
         castType: mapping.castType,
-        inputValues: sourceValues.length
+        inputValues: sourceValues.length,
+        fromLookupSource: leftSourceKey === baseSourceKey
       });
       const result = await querySourceByMappedValues(
         targetSource,
@@ -1202,7 +1298,8 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
         from: `${rightSourceKey}.${mapping.rightField}`,
         to: `${leftSourceKey}.${mapping.leftField}`,
         castType: mapping.castType,
-        inputValues: sourceValues.length
+        inputValues: sourceValues.length,
+        fromLookupSource: rightSourceKey === baseSourceKey
       });
       const result = await querySourceByMappedValues(
         targetSource,
@@ -1230,17 +1327,29 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
     });
   }
 
+  const rowsForMerge = narrowRowsByLookupJoins(
+    orderedSelectedSources,
+    rowsBySource,
+    normalizedMappings,
+    baseSourceKey
+  );
+  pushTrace("Narrowed row sets to lookup join scope (only rows joinable to lookup user).", {
+    perSource: Object.fromEntries(
+      Object.entries(rowsForMerge).map(([k, v]) => [k, v.rows.length])
+    )
+  });
+
   const mergedRows = mergeAcrossSources(
     orderedSelectedSources,
     Object.fromEntries(
-      Object.entries(rowsBySource).map(([sourceKey, value]) => [sourceKey, value.rows])
+      Object.entries(rowsForMerge).map(([sourceKey, value]) => [sourceKey, value.rows])
     ),
     normalizedMappings,
     { keepUnmatched: true }
   );
   const debug = buildMergeDebugSummary(
     orderedSelectedSources,
-    rowsBySource,
+    rowsForMerge,
     normalizedMappings,
     baseSourceKey
   );
@@ -1257,7 +1366,7 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
     mergedColumns: Array.from(
       new Set(mergedRows.flatMap((row) => Object.keys(row)))
     ),
-    rowsBySource,
+    rowsBySource: rowsForMerge,
     debug
   };
 }
