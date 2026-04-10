@@ -975,24 +975,60 @@ function buildMergeDebugSummary(selectedSources, rowsBySource, mappings, baseSou
 }
 
 async function mergeSelectedSources(environment, sources, mappings, sourceFilters) {
-  const traceLogs = [];
-  const pushTrace = (message, details = null) => {
-    const entry = {
-      at: new Date().toISOString(),
-      message,
-      details
-    };
-    traceLogs.push(entry);
+  const pushTrace = (message, details = null) =>
     console.log(
-      `[cross-merge] ${entry.at} ${entry.message}`,
-      entry.details === null || entry.details === undefined ? "" : entry.details
+      `[cross-merge] ${new Date().toISOString()} ${message}`,
+      details === null || details === undefined ? "" : details
     );
-  };
+
+  async function querySourceByMappedValues(
+    targetSource,
+    targetField,
+    rawValues
+  ) {
+    assertValidFieldPath(targetField, "mapping field");
+    const values = Array.from(
+      new Set(
+        rawValues
+          .filter((value) => value !== undefined && value !== null && String(value).trim() !== "")
+          .map((value) => value)
+      )
+    );
+
+    if (!values.length) {
+      return {
+        columns: [],
+        rows: []
+      };
+    }
+
+    const rows = [];
+    const columns = new Set();
+
+    for (const value of values) {
+      const result = await runEntityQuery(
+        targetSource.database,
+        environment,
+        targetSource.entity,
+        [{ field: targetField, value }]
+      );
+      result.rows.forEach((row) => rows.push(row));
+      result.columns.forEach((column) => columns.add(column));
+    }
+
+    const dedupedRows = Array.from(
+      new Map(rows.map((row) => [JSON.stringify(row), row])).values()
+    );
+
+    return {
+      columns: Array.from(columns),
+      rows: dedupedRows
+    };
+  }
 
   const selectedSources = normalizeSelectedSources(sources);
   const normalizedMappings = normalizeMergeMappings(mappings);
   const normalizedSourceFilters = normalizeSourceFilters(sourceFilters);
-  const hasLookupFilter = normalizedSourceFilters.length > 0;
   pushTrace("Received merge request.", {
     environment,
     sourceCount: selectedSources.length,
@@ -1008,29 +1044,30 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
     throw new Error("Add at least one field mapping before merging.");
   }
 
-  let orderedSelectedSources = selectedSources;
-  if (hasLookupFilter) {
-    const [lookupFilter] = normalizedSourceFilters;
-    const lookupSource = selectedSources.find(
-      (source) =>
-        source.database === lookupFilter.database &&
-        source.entity === lookupFilter.entity &&
-        (!lookupFilter.sourceId || lookupFilter.sourceId === source.sourceId)
-    );
-
-    if (!lookupSource) {
-      throw new Error("Lookup source must match one selected table or collection.");
-    }
-
-    orderedSelectedSources = [
-      lookupSource,
-      ...selectedSources.filter((source) => source.sourceId !== lookupSource.sourceId)
-    ];
-    pushTrace("Lookup source selected as base source.", {
-      baseSource: getSourceKey(lookupSource.database, lookupSource.entity, lookupSource.sourceId),
-      lookupFilter
-    });
+  if (!normalizedSourceFilters.length) {
+    throw new Error("Provide a lookup value to start the merge chain.");
   }
+
+  const [lookupFilter] = normalizedSourceFilters;
+  const lookupSource = selectedSources.find(
+    (source) =>
+      source.database === lookupFilter.database &&
+      source.entity === lookupFilter.entity &&
+      (!lookupFilter.sourceId || lookupFilter.sourceId === source.sourceId)
+  );
+
+  if (!lookupSource) {
+    throw new Error("Lookup source must match one selected table or collection.");
+  }
+
+  const orderedSelectedSources = [
+    lookupSource,
+    ...selectedSources.filter((source) => source.sourceId !== lookupSource.sourceId)
+  ];
+  pushTrace("Lookup source selected as base source.", {
+    baseSource: getSourceKey(lookupSource.database, lookupSource.entity, lookupSource.sourceId),
+    lookupFilter
+  });
   pushTrace(
     "Resolved merge source order.",
     orderedSelectedSources.map((source) =>
@@ -1038,62 +1075,53 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
     )
   );
 
-  validateMergeGraph(orderedSelectedSources, normalizedMappings);
-  pushTrace("Validated mapping graph connectivity.");
-
-  const rowsBySourceEntries = await Promise.all(
-    orderedSelectedSources.map(async (source) => {
-      const filtersForSource = normalizedSourceFilters
-        .filter((filter) => {
-          if (filter.database !== source.database || filter.entity !== source.entity) {
-            return false;
-          }
-          return filter.sourceId ? filter.sourceId === source.sourceId : true;
-        })
-        .map((filter) => {
-          assertValidFieldPath(filter.field, "filter field");
-
-          return {
-            field: filter.field,
-            value: filter.value
-          };
-        });
-      pushTrace("Querying source.", {
-        source: getSourceKey(source.database, source.entity, source.sourceId),
-        filters: filtersForSource
-      });
-
-      const result = await runEntityQuery(
-        source.database,
-        environment,
-        source.entity,
-        filtersForSource
-      );
-      pushTrace("Source query completed.", {
-        source: getSourceKey(source.database, source.entity, source.sourceId),
-        rowsFetched: result.rows.length,
-        columnsFetched: result.columns.length
-      });
-
-      return [
-        getSourceKey(source.database, source.entity, source.sourceId),
-        {
-          sourceId: source.sourceId,
-          database: source.database,
-          entity: source.entity,
-          columns: result.columns,
-          rows: result.rows
-        }
-      ];
-    })
+  const rowsBySource = Object.fromEntries(
+    orderedSelectedSources.map((source) => [
+      getSourceKey(source.database, source.entity, source.sourceId),
+      {
+        sourceId: source.sourceId,
+        database: source.database,
+        entity: source.entity,
+        columns: [],
+        rows: []
+      }
+    ])
   );
-
-  const rowsBySource = Object.fromEntries(rowsBySourceEntries);
   const baseSourceKey = getSourceKey(
     orderedSelectedSources[0].database,
     orderedSelectedSources[0].entity,
     orderedSelectedSources[0].sourceId
   );
+
+  assertValidFieldPath(lookupFilter.field, "filter field");
+  pushTrace("Querying lookup source with lookup filter.", {
+    source: baseSourceKey,
+    filter: {
+      field: lookupFilter.field,
+      value: lookupFilter.value
+    }
+  });
+  const baseResult = await runEntityQuery(
+    orderedSelectedSources[0].database,
+    environment,
+    orderedSelectedSources[0].entity,
+    [
+      {
+        field: lookupFilter.field,
+        value: lookupFilter.value
+      }
+    ]
+  );
+  rowsBySource[baseSourceKey] = {
+    ...rowsBySource[baseSourceKey],
+    columns: baseResult.columns,
+    rows: baseResult.rows
+  };
+  pushTrace("Lookup source query completed.", {
+    source: baseSourceKey,
+    rowsFetched: baseResult.rows.length,
+    columnsFetched: baseResult.columns.length
+  });
 
   if ((rowsBySource[baseSourceKey]?.rows || []).length === 0) {
     pushTrace("Base source has no rows after lookup filter. Returning empty merge.");
@@ -1112,6 +1140,94 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
       rowsBySource,
       debug
     };
+  }
+
+  // Follow mappings in user-provided order and query the not-yet-fetched side
+  // using values coming from the already-fetched side.
+  for (const mapping of normalizedMappings) {
+    const leftSourceKey = resolveSourceKey(
+      orderedSelectedSources,
+      mapping.leftDatabase,
+      mapping.leftEntity,
+      mapping.leftSourceId
+    );
+    const rightSourceKey = resolveSourceKey(
+      orderedSelectedSources,
+      mapping.rightDatabase,
+      mapping.rightEntity,
+      mapping.rightSourceId
+    );
+    const leftRows = rowsBySource[leftSourceKey]?.rows || [];
+    const rightRows = rowsBySource[rightSourceKey]?.rows || [];
+    const leftFetched = leftRows.length > 0;
+    const rightFetched = rightRows.length > 0;
+
+    if (leftFetched && !rightFetched) {
+      const targetSource = orderedSelectedSources.find(
+        (source) =>
+          getSourceKey(source.database, source.entity, source.sourceId) === rightSourceKey
+      );
+      const sourceValues = leftRows.map((row) => getNestedValue(row, mapping.leftField));
+      pushTrace("Applying mapping chain step.", {
+        from: `${leftSourceKey}.${mapping.leftField}`,
+        to: `${rightSourceKey}.${mapping.rightField}`,
+        castType: mapping.castType,
+        inputValues: sourceValues.length
+      });
+      const result = await querySourceByMappedValues(
+        targetSource,
+        mapping.rightField,
+        sourceValues
+      );
+      rowsBySource[rightSourceKey] = {
+        ...rowsBySource[rightSourceKey],
+        columns: result.columns,
+        rows: result.rows
+      };
+      pushTrace("Mapping chain query completed.", {
+        source: rightSourceKey,
+        rowsFetched: result.rows.length,
+        columnsFetched: result.columns.length
+      });
+      continue;
+    }
+
+    if (rightFetched && !leftFetched) {
+      const targetSource = orderedSelectedSources.find(
+        (source) =>
+          getSourceKey(source.database, source.entity, source.sourceId) === leftSourceKey
+      );
+      const sourceValues = rightRows.map((row) => getNestedValue(row, mapping.rightField));
+      pushTrace("Applying mapping chain step.", {
+        from: `${rightSourceKey}.${mapping.rightField}`,
+        to: `${leftSourceKey}.${mapping.leftField}`,
+        castType: mapping.castType,
+        inputValues: sourceValues.length
+      });
+      const result = await querySourceByMappedValues(
+        targetSource,
+        mapping.leftField,
+        sourceValues
+      );
+      rowsBySource[leftSourceKey] = {
+        ...rowsBySource[leftSourceKey],
+        columns: result.columns,
+        rows: result.rows
+      };
+      pushTrace("Mapping chain query completed.", {
+        source: leftSourceKey,
+        rowsFetched: result.rows.length,
+        columnsFetched: result.columns.length
+      });
+      continue;
+    }
+
+    pushTrace("Skipping mapping chain step (both sides already fetched or both empty).", {
+      leftSourceKey,
+      rightSourceKey,
+      leftRows: leftRows.length,
+      rightRows: rightRows.length
+    });
   }
 
   const mergedRows = mergeAcrossSources(
