@@ -10,6 +10,7 @@ const addMappingBtn = document.getElementById("addMappingBtn");
 const mappingRows = document.getElementById("mappingRows");
 const runCrossMergeBtn = document.getElementById("runCrossMergeBtn");
 const mergeSummary = document.getElementById("mergeSummary");
+const mergeDebug = document.getElementById("mergeDebug");
 const outputFieldDropdownBtn = document.getElementById("outputFieldDropdownBtn");
 const outputFieldDropdownPanel = document.getElementById("outputFieldDropdownPanel");
 const outputFieldSearchInput = document.getElementById("outputFieldSearch");
@@ -35,11 +36,47 @@ function renderJsonResult(element, payload) {
 
 function hideMergeResults() {
   mergeSummary.textContent = "";
+  mergeDebug.classList.add("hidden");
+  mergeDebug.innerHTML = "";
   sourceSummary.innerHTML = "";
   mergedTableWrapper.classList.add("hidden");
   mergedTableWrapper.innerHTML = "";
   mergedJson.classList.add("hidden");
   mergedJson.textContent = "";
+}
+
+function renderMergeDebug(debug) {
+  if (!debug) {
+    mergeDebug.classList.add("hidden");
+    mergeDebug.innerHTML = "";
+    return;
+  }
+
+  const rowsBySource = Object.entries(debug.selectedSourceRows || {})
+    .map(([sourceKey, count]) => `<li><code>${sourceKey}</code>: ${count} row(s)</li>`)
+    .join("");
+
+  const mappingRows = (debug.mappingStats || [])
+    .map(
+      (item) =>
+        `<tr><td>${item.leftSourceKey}.${item.leftField}</td><td>${item.rightSourceKey}.${item.rightField}</td><td>${item.castType}</td><td>${item.leftRows}</td><td>${item.rightRows}</td><td>${item.pairMatches}</td></tr>`
+    )
+    .join("");
+
+  mergeDebug.innerHTML = `
+    <p class="eyebrow">Debug</p>
+    <p><strong>Base source:</strong> <code>${debug.baseSourceKey}</code> (${debug.baseRows} row(s) after lookup filter)</p>
+    <p><strong>Rows fetched by selected source</strong></p>
+    <ul>${rowsBySource || "<li>No rows fetched.</li>"}</ul>
+    <p><strong>Mapping match stats</strong></p>
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead><tr><th>Left</th><th>Right</th><th>Cast</th><th>Left Rows</th><th>Right Rows</th><th>Matched Pairs</th></tr></thead>
+        <tbody>${mappingRows || "<tr><td colspan='6'>No mapping stats.</td></tr>"}</tbody>
+      </table>
+    </div>
+  `;
+  mergeDebug.classList.remove("hidden");
 }
 
 async function fetchJson(url, options) {
@@ -508,6 +545,7 @@ async function handleRunMerge() {
       })
     });
     mergeSummary.textContent = `${data.mergedCount} merged row(s) built from ${data.sources.length} selected data sources.`;
+    renderMergeDebug(data.debug);
     renderSourceSummary(data.rowsBySource);
     renderMergedRows(data.mergedRows);
     renderJsonResult(mergedJson, data);

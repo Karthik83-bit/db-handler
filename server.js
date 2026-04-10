@@ -920,11 +920,85 @@ function mergeAcrossSources(selectedSources, rowsBySource, mappings, options = {
   return mergedGroups.map((group) => flattenMergedGroup(group, selectedSources));
 }
 
+function buildMergeDebugSummary(selectedSources, rowsBySource, mappings, baseSourceKey) {
+  const baseSource = rowsBySource[baseSourceKey];
+  const baseRows = baseSource?.rows || [];
+  const mappingStats = mappings.map((mapping) => {
+    const leftSourceKey = getSourceKey(
+      mapping.leftDatabase,
+      mapping.leftEntity,
+      mapping.leftSourceId
+    );
+    const rightSourceKey = getSourceKey(
+      mapping.rightDatabase,
+      mapping.rightEntity,
+      mapping.rightSourceId
+    );
+    const leftRows = rowsBySource[leftSourceKey]?.rows || [];
+    const rightRows = rowsBySource[rightSourceKey]?.rows || [];
+    let pairMatches = 0;
+
+    leftRows.forEach((leftRow) => {
+      rightRows.forEach((rightRow) => {
+        if (
+          valuesMatch(
+            getNestedValue(leftRow, mapping.leftField),
+            getNestedValue(rightRow, mapping.rightField),
+            mapping.castType
+          )
+        ) {
+          pairMatches += 1;
+        }
+      });
+    });
+
+    return {
+      leftSourceKey,
+      leftField: mapping.leftField,
+      rightSourceKey,
+      rightField: mapping.rightField,
+      castType: mapping.castType,
+      leftRows: leftRows.length,
+      rightRows: rightRows.length,
+      pairMatches
+    };
+  });
+
+  return {
+    baseSourceKey,
+    baseRows: baseRows.length,
+    selectedSourceRows: Object.fromEntries(
+      Object.entries(rowsBySource).map(([sourceKey, value]) => [sourceKey, value.rows.length])
+    ),
+    mappingStats
+  };
+}
+
 async function mergeSelectedSources(environment, sources, mappings, sourceFilters) {
+  const traceLogs = [];
+  const pushTrace = (message, details = null) => {
+    const entry = {
+      at: new Date().toISOString(),
+      message,
+      details
+    };
+    traceLogs.push(entry);
+    console.log(
+      `[cross-merge] ${entry.at} ${entry.message}`,
+      entry.details === null || entry.details === undefined ? "" : entry.details
+    );
+  };
+
   const selectedSources = normalizeSelectedSources(sources);
   const normalizedMappings = normalizeMergeMappings(mappings);
   const normalizedSourceFilters = normalizeSourceFilters(sourceFilters);
   const hasLookupFilter = normalizedSourceFilters.length > 0;
+  pushTrace("Received merge request.", {
+    environment,
+    sourceCount: selectedSources.length,
+    mappingCount: normalizedMappings.length,
+    filterCount: normalizedSourceFilters.length
+  });
 
   if (selectedSources.length < 2) {
     throw new Error("Choose at least two tables or collections to merge.");
@@ -934,40 +1008,48 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
     throw new Error("Add at least one field mapping before merging.");
   }
 
-  const orderedSelectedSources = hasLookupFilter
-    ? [
-        ...selectedSources.filter(
-          (source) =>
-            normalizedSourceFilters.some(
-              (filter) =>
-                filter.database === source.database &&
-                filter.entity === source.entity &&
-                (!filter.sourceId || filter.sourceId === source.sourceId)
-            )
-        ),
-        ...selectedSources.filter(
-          (source) =>
-            !normalizedSourceFilters.some(
-              (filter) =>
-                filter.database === source.database &&
-                filter.entity === source.entity &&
-                (!filter.sourceId || filter.sourceId === source.sourceId)
-            )
-        )
-      ]
-    : selectedSources;
+  let orderedSelectedSources = selectedSources;
+  if (hasLookupFilter) {
+    const [lookupFilter] = normalizedSourceFilters;
+    const lookupSource = selectedSources.find(
+      (source) =>
+        source.database === lookupFilter.database &&
+        source.entity === lookupFilter.entity &&
+        (!lookupFilter.sourceId || lookupFilter.sourceId === source.sourceId)
+    );
+
+    if (!lookupSource) {
+      throw new Error("Lookup source must match one selected table or collection.");
+    }
+
+    orderedSelectedSources = [
+      lookupSource,
+      ...selectedSources.filter((source) => source.sourceId !== lookupSource.sourceId)
+    ];
+    pushTrace("Lookup source selected as base source.", {
+      baseSource: getSourceKey(lookupSource.database, lookupSource.entity, lookupSource.sourceId),
+      lookupFilter
+    });
+  }
+  pushTrace(
+    "Resolved merge source order.",
+    orderedSelectedSources.map((source) =>
+      getSourceKey(source.database, source.entity, source.sourceId)
+    )
+  );
 
   validateMergeGraph(orderedSelectedSources, normalizedMappings);
+  pushTrace("Validated mapping graph connectivity.");
 
   const rowsBySourceEntries = await Promise.all(
     orderedSelectedSources.map(async (source) => {
       const filtersForSource = normalizedSourceFilters
-        .filter(
-          (filter) =>
-            filter.database === source.database &&
-            filter.entity === source.entity &&
-            (!filter.sourceId || filter.sourceId === source.sourceId)
-        )
+        .filter((filter) => {
+          if (filter.database !== source.database || filter.entity !== source.entity) {
+            return false;
+          }
+          return filter.sourceId ? filter.sourceId === source.sourceId : true;
+        })
         .map((filter) => {
           assertValidFieldPath(filter.field, "filter field");
 
@@ -976,6 +1058,10 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
             value: filter.value
           };
         });
+      pushTrace("Querying source.", {
+        source: getSourceKey(source.database, source.entity, source.sourceId),
+        filters: filtersForSource
+      });
 
       const result = await runEntityQuery(
         source.database,
@@ -983,6 +1069,11 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
         source.entity,
         filtersForSource
       );
+      pushTrace("Source query completed.", {
+        source: getSourceKey(source.database, source.entity, source.sourceId),
+        rowsFetched: result.rows.length,
+        columnsFetched: result.columns.length
+      });
 
       return [
         getSourceKey(source.database, source.entity, source.sourceId),
@@ -998,14 +1089,49 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
   );
 
   const rowsBySource = Object.fromEntries(rowsBySourceEntries);
+  const baseSourceKey = getSourceKey(
+    orderedSelectedSources[0].database,
+    orderedSelectedSources[0].entity,
+    orderedSelectedSources[0].sourceId
+  );
+
+  if ((rowsBySource[baseSourceKey]?.rows || []).length === 0) {
+    pushTrace("Base source has no rows after lookup filter. Returning empty merge.");
+    const debug = buildMergeDebugSummary(
+      orderedSelectedSources,
+      rowsBySource,
+      normalizedMappings,
+      baseSourceKey
+    );
+    return {
+      sources: orderedSelectedSources,
+      mappings: normalizedMappings,
+      sourceFilters: normalizedSourceFilters,
+      mergedRows: [],
+      mergedColumns: [],
+      rowsBySource,
+      debug
+    };
+  }
+
   const mergedRows = mergeAcrossSources(
     orderedSelectedSources,
     Object.fromEntries(
       Object.entries(rowsBySource).map(([sourceKey, value]) => [sourceKey, value.rows])
     ),
     normalizedMappings,
-    { keepUnmatched: !hasLookupFilter }
+    { keepUnmatched: true }
   );
+  const debug = buildMergeDebugSummary(
+    orderedSelectedSources,
+    rowsBySource,
+    normalizedMappings,
+    baseSourceKey
+  );
+  pushTrace("Merge completed.", {
+    mergedRows: mergedRows.length,
+    mergedColumns: Array.from(new Set(mergedRows.flatMap((row) => Object.keys(row)))).length
+  });
 
   return {
     sources: orderedSelectedSources,
@@ -1015,7 +1141,8 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
     mergedColumns: Array.from(
       new Set(mergedRows.flatMap((row) => Object.keys(row)))
     ),
-    rowsBySource
+    rowsBySource,
+    debug
   };
 }
 
