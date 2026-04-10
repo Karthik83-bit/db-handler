@@ -806,7 +806,8 @@ function flattenMergedGroup(group, selectedSources) {
   return flattened;
 }
 
-function mergeAcrossSources(selectedSources, rowsBySource, mappings) {
+function mergeAcrossSources(selectedSources, rowsBySource, mappings, options = {}) {
+  const keepUnmatched = options.keepUnmatched !== false;
   const sourceKeys = selectedSources.map((source) =>
     getSourceKey(source.database, source.entity, source.sourceId)
   );
@@ -885,6 +886,9 @@ function mergeAcrossSources(selectedSources, rowsBySource, mappings) {
         );
 
         if (matches.length === 0) {
+          if (!keepUnmatched) {
+            return;
+          }
           nextGroups.push({
             ...group,
             [pendingSourceKey]: null
@@ -920,6 +924,7 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
   const selectedSources = normalizeSelectedSources(sources);
   const normalizedMappings = normalizeMergeMappings(mappings);
   const normalizedSourceFilters = normalizeSourceFilters(sourceFilters);
+  const hasLookupFilter = normalizedSourceFilters.length > 0;
 
   if (selectedSources.length < 2) {
     throw new Error("Choose at least two tables or collections to merge.");
@@ -929,10 +934,33 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
     throw new Error("Add at least one field mapping before merging.");
   }
 
-  validateMergeGraph(selectedSources, normalizedMappings);
+  const orderedSelectedSources = hasLookupFilter
+    ? [
+        ...selectedSources.filter(
+          (source) =>
+            normalizedSourceFilters.some(
+              (filter) =>
+                filter.database === source.database &&
+                filter.entity === source.entity &&
+                (!filter.sourceId || filter.sourceId === source.sourceId)
+            )
+        ),
+        ...selectedSources.filter(
+          (source) =>
+            !normalizedSourceFilters.some(
+              (filter) =>
+                filter.database === source.database &&
+                filter.entity === source.entity &&
+                (!filter.sourceId || filter.sourceId === source.sourceId)
+            )
+        )
+      ]
+    : selectedSources;
+
+  validateMergeGraph(orderedSelectedSources, normalizedMappings);
 
   const rowsBySourceEntries = await Promise.all(
-    selectedSources.map(async (source) => {
+    orderedSelectedSources.map(async (source) => {
       const filtersForSource = normalizedSourceFilters
         .filter(
           (filter) =>
@@ -971,15 +999,16 @@ async function mergeSelectedSources(environment, sources, mappings, sourceFilter
 
   const rowsBySource = Object.fromEntries(rowsBySourceEntries);
   const mergedRows = mergeAcrossSources(
-    selectedSources,
+    orderedSelectedSources,
     Object.fromEntries(
       Object.entries(rowsBySource).map(([sourceKey, value]) => [sourceKey, value.rows])
     ),
-    normalizedMappings
+    normalizedMappings,
+    { keepUnmatched: !hasLookupFilter }
   );
 
   return {
-    sources: selectedSources,
+    sources: orderedSelectedSources,
     mappings: normalizedMappings,
     sourceFilters: normalizedSourceFilters,
     mergedRows,
