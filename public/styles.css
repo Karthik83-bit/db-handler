@@ -135,6 +135,11 @@ h1 {
   background: #fff;
 }
 
+.multi-select {
+  min-height: 130px;
+  padding: 12px 14px;
+}
+
 .button {
   padding: 0 20px;
   background: var(--accent);

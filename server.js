@@ -81,7 +81,12 @@ function normalizeSelectedSources(sources) {
 
     uniqueSources.set(getSourceKey(database, entity), {
       database,
-      entity
+      entity,
+      selectedFields: Array.isArray(source?.selectedFields)
+        ? source.selectedFields
+            .map((field) => String(field || "").trim())
+            .filter(Boolean)
+        : []
     });
   });
 
@@ -739,12 +744,20 @@ function flattenMergedGroup(group, selectedSources) {
   selectedSources.forEach((source) => {
     const sourceKey = getSourceKey(source.database, source.entity);
     const row = group[sourceKey];
+    const selectedFields =
+      Array.isArray(source.selectedFields) && source.selectedFields.length
+        ? source.selectedFields
+        : null;
 
     if (!row) {
       return;
     }
 
     Object.entries(row).forEach(([field, value]) => {
+      if (selectedFields && !selectedFields.includes(field)) {
+        return;
+      }
+
       flattened[`${source.database}.${source.entity}.${field}`] = value;
     });
   });

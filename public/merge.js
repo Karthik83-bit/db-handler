@@ -66,6 +66,10 @@ function getEntitySelect(database) {
   return document.getElementById(`entity-${database}`);
 }
 
+function getSelectedFieldsSelect(database) {
+  return document.getElementById(`selected-fields-${database}`);
+}
+
 function getFieldList(database) {
   return document.getElementById(`fields-${database}`);
 }
@@ -77,7 +81,10 @@ function getStatusPill(database) {
 function getSelectedSources() {
   return DATABASES.map((database) => ({
     database,
-    entity: getEntitySelect(database).value
+    entity: getEntitySelect(database).value,
+    selectedFields: Array.from(getSelectedFieldsSelect(database).selectedOptions).map(
+      (option) => option.value
+    )
   })).filter((source) => source.entity);
 }
 
@@ -106,6 +113,24 @@ function renderFieldList(database, fields) {
     chip.className = "field-chip";
     chip.textContent = `${field.name} - ${field.type}`;
     fieldList.appendChild(chip);
+  });
+}
+
+function renderSelectedFieldOptions(database, fields) {
+  const select = getSelectedFieldsSelect(database);
+  const previousSelection = new Set(
+    Array.from(select.selectedOptions).map((option) => option.value)
+  );
+
+  select.innerHTML = "";
+  select.disabled = !fields.length;
+
+  fields.forEach((field) => {
+    const option = document.createElement("option");
+    option.value = field.name;
+    option.textContent = `${field.name} (${field.type})`;
+    option.selected = previousSelection.size === 0 || previousSelection.has(field.name);
+    select.appendChild(option);
   });
 }
 
@@ -413,6 +438,7 @@ async function loadDatabaseOptions() {
 async function loadFields(database, entity) {
   if (!entity) {
     renderFieldList(database, []);
+    renderSelectedFieldOptions(database, []);
     return;
   }
 
@@ -424,6 +450,7 @@ async function loadFields(database, entity) {
   const sourceKey = `${database}:${entity}`;
   state.fieldsBySource[sourceKey] = data.fields;
   renderFieldList(database, data.fields);
+  renderSelectedFieldOptions(database, data.fields);
   refreshMappingRowSources();
   refreshSeedSourceOptions();
 }
@@ -494,6 +521,7 @@ async function handleConnectAll() {
           getEntitySelect(database).disabled = true;
           getEntitySelect(database).innerHTML = "";
           renderFieldList(database, []);
+          renderSelectedFieldOptions(database, []);
           statuses.push({
             database,
             success: false,
