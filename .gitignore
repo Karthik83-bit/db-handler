@@ -1,2 +1,7 @@
 node_modules
 npm-debug.log
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
