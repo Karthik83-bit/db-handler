@@ -1,3 +1,5 @@
+require("dotenv").config();
+
 const express = require("express");
 const { Client: PgClient } = require("pg");
 const { MongoClient } = require("mongodb");
